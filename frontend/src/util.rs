@@ -16,16 +16,12 @@ pub fn set_timeout(f: impl FnOnce() + 'static, ms: i32) {
 /// Runs `f` every `ms` milliseconds for the lifetime of the page.
 pub fn set_interval(f: impl FnMut() + 'static, ms: i32) {
     let cb = Closure::<dyn FnMut()>::new(f);
-    let _ = window()
-        .set_interval_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), ms);
+    let _ = window().set_interval_with_callback_and_timeout_and_arguments_0(cb.as_ref().unchecked_ref(), ms);
     cb.forget();
 }
 
 pub async fn get_json<T: DeserializeOwned>(path: &str) -> Result<T, String> {
-    let r = gloo_net::http::Request::get(path)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let r = gloo_net::http::Request::get(path).send().await.map_err(|e| e.to_string())?;
     if !r.ok() {
         return Err(format!("{path}: HTTP {}", r.status()));
     }
@@ -65,13 +61,7 @@ pub fn fmt_rate(r: f32) -> String {
 
 pub fn fmt_time(ms: i64) -> String {
     let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64));
-    format!(
-        "{:02}:{:02}:{:02}.{:03}",
-        d.get_hours(),
-        d.get_minutes(),
-        d.get_seconds(),
-        d.get_milliseconds()
-    )
+    format!("{:02}:{:02}:{:02}.{:03}", d.get_hours(), d.get_minutes(), d.get_seconds(), d.get_milliseconds())
 }
 
 /// Stable hue per namespace so colours stay the same across reloads.

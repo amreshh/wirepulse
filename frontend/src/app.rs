@@ -40,9 +40,7 @@ impl EpIndex {
         if let Some(l) = self.labels.get(id) {
             return l.clone();
         }
-        id.strip_prefix("reserved:")
-            .map(|e| vec![format!("reserved:{e}")])
-            .unwrap_or_default()
+        id.strip_prefix("reserved:").map(|e| vec![format!("reserved:{e}")]).unwrap_or_default()
     }
 }
 
@@ -181,12 +179,14 @@ pub fn App() -> impl IntoView {
         view! {
             <button class="tab" class:active=move || ctx.tab.get() == t on:click=move |_| ctx.tab.set(t)>
                 {label}
-                {move || match t {
-                    Tab::Policies => Some(ctx.policies.with(Vec::len)),
-                    Tab::Endpoints => Some(ctx.endpoints.with(|e| e.endpoints.len())),
-                    _ => None,
-                }
-                .map(|n| view! { <span class="count">{n}</span> })}
+                {move || {
+                    match t {
+                        Tab::Policies => Some(ctx.policies.with(Vec::len)),
+                        Tab::Endpoints => Some(ctx.endpoints.with(|e| e.endpoints.len())),
+                        _ => None,
+                    }
+                        .map(|n| view! { <span class="count">{n}</span> })
+                }}
             </button>
         }
     };
@@ -203,25 +203,22 @@ pub fn App() -> impl IntoView {
                     }}
                 </div>
                 <nav class="tabs">
-                    {tab(Tab::Map, "Map")}
-                    {tab(Tab::Flows, "Flows")}
-                    {tab(Tab::Endpoints, "Endpoints")}
-                    {tab(Tab::Policies, "Policies")}
-                    {tab(Tab::Config, "Config")}
+                    {tab(Tab::Map, "Map")} {tab(Tab::Flows, "Flows")} {tab(Tab::Endpoints, "Endpoints")}
+                    {tab(Tab::Policies, "Policies")} {tab(Tab::Config, "Config")}
                 </nav>
-                <StatusBar/>
+                <StatusBar />
             </header>
             <main>
                 // The map stays mounted so its zoom and position survive tab switches.
                 <div class="tab-body map-body" class:hidden=move || ctx.tab.get() != Tab::Map>
-                    <MapTab/>
+                    <MapTab />
                 </div>
                 {move || match ctx.tab.get() {
                     Tab::Map => ().into_any(),
-                    Tab::Flows => view! { <FlowsTab/> }.into_any(),
-                    Tab::Endpoints => view! { <EndpointsTab/> }.into_any(),
-                    Tab::Policies => view! { <PoliciesTab/> }.into_any(),
-                    Tab::Config => view! { <ConfigTab/> }.into_any(),
+                    Tab::Flows => view! { <FlowsTab /> }.into_any(),
+                    Tab::Endpoints => view! { <EndpointsTab /> }.into_any(),
+                    Tab::Policies => view! { <PoliciesTab /> }.into_any(),
+                    Tab::Config => view! { <ConfigTab /> }.into_any(),
                 }}
             </main>
         </div>

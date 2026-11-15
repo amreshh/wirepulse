@@ -31,11 +31,7 @@ pub struct FlowAggregator {
 
 impl Default for FlowAggregator {
     fn default() -> Self {
-        Self {
-            edges: HashMap::new(),
-            workloads: HashMap::new(),
-            last_tick: Instant::now(),
-        }
+        Self { edges: HashMap::new(), workloads: HashMap::new(), last_tick: Instant::now() }
     }
 }
 
@@ -49,22 +45,18 @@ impl FlowAggregator {
             self.workloads.insert(ev.source.clone(), ev.src_workload.clone());
         }
         if !ev.dst_workload.is_empty() {
-            self.workloads
-                .insert(ev.destination.clone(), ev.dst_workload.clone());
+            self.workloads.insert(ev.destination.clone(), ev.dst_workload.clone());
         }
-        let acc = self
-            .edges
-            .entry((ev.source.clone(), ev.destination.clone()))
-            .or_insert_with(|| Acc {
-                fwd: 0,
-                drop: 0,
-                prev_fwd: 0,
-                prev_drop: 0,
-                rate_fwd: 0.0,
-                rate_drop: 0.0,
-                ports: BTreeSet::new(),
-                last_seen: Instant::now(),
-            });
+        let acc = self.edges.entry((ev.source.clone(), ev.destination.clone())).or_insert_with(|| Acc {
+            fwd: 0,
+            drop: 0,
+            prev_fwd: 0,
+            prev_drop: 0,
+            rate_fwd: 0.0,
+            rate_drop: 0.0,
+            ports: BTreeSet::new(),
+            last_seen: Instant::now(),
+        });
         match ev.verdict {
             Verdict::Dropped | Verdict::Error => acc.drop += 1,
             _ => acc.fwd += 1,
@@ -82,8 +74,7 @@ impl FlowAggregator {
         let now = Instant::now();
         let dt = now.duration_since(self.last_tick).as_secs_f32().max(0.05);
         self.last_tick = now;
-        self.edges
-            .retain(|_, a| now.duration_since(a.last_seen) < EDGE_TTL);
+        self.edges.retain(|_, a| now.duration_since(a.last_seen) < EDGE_TTL);
 
         for a in self.edges.values_mut() {
             let inst_f = (a.fwd - a.prev_fwd) as f32 / dt;
@@ -103,11 +94,7 @@ impl FlowAggregator {
 
         // Workload names are only looked up for endpoints that have edges;
         // forget the rest so pod churn doesn't grow this forever.
-        let live: HashSet<&str> = self
-            .edges
-            .keys()
-            .flat_map(|(s, t)| [s.as_str(), t.as_str()])
-            .collect();
+        let live: HashSet<&str> = self.edges.keys().flat_map(|(s, t)| [s.as_str(), t.as_str()]).collect();
         self.workloads.retain(|id, _| live.contains(id.as_str()));
     }
 

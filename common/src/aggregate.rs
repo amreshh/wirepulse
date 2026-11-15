@@ -81,16 +81,8 @@ pub fn group_id(node: &Node, level: Level) -> String {
 
 /// Controller kind from a workload string such as `Deployment/web`.
 pub fn kind_of_workload(workload: &str) -> &str {
-    const KNOWN: [&str; 8] = [
-        "Deployment",
-        "StatefulSet",
-        "DaemonSet",
-        "Job",
-        "CronJob",
-        "ReplicaSet",
-        "ReplicationController",
-        "Pod",
-    ];
+    const KNOWN: [&str; 8] =
+        ["Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "ReplicaSet", "ReplicationController", "Pod"];
     match workload.split_once('/') {
         Some((k, _)) if KNOWN.contains(&k) => k,
         _ => "Pod",
@@ -112,12 +104,7 @@ fn label_for(node: &Node, level: Level) -> String {
     match level {
         Level::Pod => node.name.clone(),
         // "Deployment/frontend" -> "frontend"
-        Level::Workload => node
-            .workload
-            .rsplit('/')
-            .next()
-            .unwrap_or(&node.workload)
-            .to_string(),
+        Level::Workload => node.workload.rsplit('/').next().unwrap_or(&node.workload).to_string(),
         Level::Namespace => node.namespace.clone(),
     }
 }
@@ -132,11 +119,7 @@ pub fn aggregate(graph: &Graph, level: Level) -> AggGraph {
     for n in &graph.nodes {
         let gid = group_id(n, level);
         member_of.insert(n.id.as_str(), gid.clone());
-        let group = if n.kind == NodeKind::External {
-            EXTERNAL_GROUP.to_string()
-        } else {
-            n.namespace.clone()
-        };
+        let group = if n.kind == NodeKind::External { EXTERNAL_GROUP.to_string() } else { n.namespace.clone() };
         let e = nodes.entry(gid.clone()).or_insert_with(|| AggNode {
             id: gid,
             label: label_for(n, level),
@@ -169,11 +152,7 @@ pub fn aggregate(graph: &Graph, level: Level) -> AggGraph {
         };
         nodes.entry(gid.clone()).or_insert_with(|| AggNode {
             id: gid.clone(),
-            label: if level == Level::Namespace && kind == NodeKind::Pod {
-                group.clone()
-            } else {
-                label
-            },
+            label: if level == Level::Namespace && kind == NodeKind::Pod { group.clone() } else { label },
             group,
             kind,
             workload_kind: match (kind, level) {
@@ -336,11 +315,7 @@ mod tests {
         assert_eq!(g.node("shop/StatefulSet/db").unwrap().workload_kind, "StatefulSet");
         assert_eq!(g.node("reserved:world").unwrap().workload_kind, "world");
         assert_eq!(fe.label, "fe");
-        let e = g
-            .edges
-            .iter()
-            .find(|e| e.source == "shop/Deployment/fe" && e.target == "shop/StatefulSet/db")
-            .unwrap();
+        let e = g.edges.iter().find(|e| e.source == "shop/Deployment/fe" && e.target == "shop/StatefulSet/db").unwrap();
         assert_eq!(e.flows_per_sec, 5.0);
         assert_eq!(e.members, 2);
     }
@@ -354,9 +329,6 @@ mod tests {
         assert!(g.node("ns:gone").is_some());
         assert!(g.node("reserved:world").is_some());
         assert!(g.edges.iter().all(|e| e.source != e.target));
-        assert!(g
-            .edges
-            .iter()
-            .any(|e| e.source == "ns:shop" && e.target == "ns:pay" && e.flows_per_sec == 1.0));
+        assert!(g.edges.iter().any(|e| e.source == "ns:shop" && e.target == "ns:pay" && e.flows_per_sec == 1.0));
     }
 }

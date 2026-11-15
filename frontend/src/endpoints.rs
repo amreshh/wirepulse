@@ -58,8 +58,18 @@ fn interesting(l: &str) -> bool {
 
 fn enforcement_badge(v: Option<bool>) -> impl IntoView {
     match v {
-        Some(true) => view! { <span class="badge enf on" title="policy enforced">"enforced"</span> }.into_any(),
-        Some(false) => view! { <span class="badge enf off" title="all traffic allowed">"open"</span> }.into_any(),
+        Some(true) => view! {
+            <span class="badge enf on" title="policy enforced">
+                "enforced"
+            </span>
+        }
+        .into_any(),
+        Some(false) => view! {
+            <span class="badge enf off" title="all traffic allowed">
+                "open"
+            </span>
+        }
+        .into_any(),
         None => view! { <span class="muted">"–"</span> }.into_any(),
     }
 }
@@ -117,22 +127,30 @@ pub fn EndpointsTab() -> impl IntoView {
                 SortKey::State => (&a.state, &a.id).cmp(&(&b.state, &b.id)),
                 SortKey::Traffic => rate(a).total_cmp(&rate(b)),
             };
-            if asc { o } else { o.reverse() }
+            if asc {
+                o
+            } else {
+                o.reverse()
+            }
         });
         v
     });
 
     let th = move |label: &'static str, key: SortKey| {
         view! {
-            <th class="sortable" on:click=move |_| sort.update(|(k, asc)| {
-                if *k == key {
-                    *asc = !*asc;
-                } else {
-                    *k = key;
-                    // Busiest first makes more sense for traffic.
-                    *asc = key != SortKey::Traffic;
+            <th
+                class="sortable"
+                on:click=move |_| {
+                    sort.update(|(k, asc)| {
+                        if *k == key {
+                            *asc = !*asc;
+                        } else {
+                            *k = key;
+                            *asc = key != SortKey::Traffic;
+                        }
+                    })
                 }
-            })>
+            >
                 {label}
                 {move || {
                     let (k, asc) = sort.get();
@@ -145,20 +163,26 @@ pub fn EndpointsTab() -> impl IntoView {
     view! {
         <div class="tab-body endpoints-body">
             <div class="toolbar">
-                <FilterBar/>
-                <select on:change=move |ev| state_filter.set(event_target_value(&ev)) prop:value=move || state_filter.get()>
+                <FilterBar />
+                <select
+                    on:change=move |ev| state_filter.set(event_target_value(&ev))
+                    prop:value=move || state_filter.get()
+                >
                     <option value="">"Any state"</option>
                     <option value="ready">"Ready"</option>
                     <option value="not-ready">"Not ready"</option>
                 </select>
-                <select
-                    on:change=move |ev| enforcement.set(match event_target_value(&ev).as_str() {
-                        "ingress" => Enforcement::Ingress,
-                        "egress" => Enforcement::Egress,
-                        "none" => Enforcement::None,
-                        _ => Enforcement::Any,
-                    })
-                >
+                <select on:change=move |ev| {
+                    enforcement
+                        .set(
+                            match event_target_value(&ev).as_str() {
+                                "ingress" => Enforcement::Ingress,
+                                "egress" => Enforcement::Egress,
+                                "none" => Enforcement::None,
+                                _ => Enforcement::Any,
+                            },
+                        )
+                }>
                     <option value="any">"Any enforcement"</option>
                     <option value="ingress">"Ingress enforced"</option>
                     <option value="egress">"Egress enforced"</option>
@@ -183,16 +207,10 @@ pub fn EndpointsTab() -> impl IntoView {
                     <table class="flow-table ep-table">
                         <thead>
                             <tr>
-                                {th("Endpoint", SortKey::Name)}
-                                {th("ID", SortKey::EndpointId)}
-                                {th("Identity", SortKey::Identity)}
-                                <th>"Labels"</th>
-                                <th>"IPs"</th>
-                                {th("Node", SortKey::Node)}
-                                {th("State", SortKey::State)}
-                                <th>"Ingress"</th>
-                                <th>"Egress"</th>
-                                {th("Traffic", SortKey::Traffic)}
+                                {th("Endpoint", SortKey::Name)} {th("ID", SortKey::EndpointId)}
+                                {th("Identity", SortKey::Identity)} <th>"Labels"</th> <th>"IPs"</th>
+                                {th("Node", SortKey::Node)} {th("State", SortKey::State)} <th>"Ingress"</th>
+                                <th>"Egress"</th> {th("Traffic", SortKey::Traffic)}
                             </tr>
                         </thead>
                         <tbody>
@@ -204,56 +222,111 @@ pub fn EndpointsTab() -> impl IntoView {
                                     } else {
                                         "No endpoints match the filter."
                                     };
-                                    return view! { <tr><td colspan="10" class="empty">{msg}</td></tr> }.into_any();
-                                }
-                                rows.get().into_iter().map(|e| {
-                                    let id = e.id.clone();
-                                    let id_sel = e.id.clone();
-                                    let (tin, tout, tdrop) = tr.get(&e.id).copied().unwrap_or_default();
-                                    let shown: Vec<String> = e.labels.iter().filter(|l| interesting(l)).cloned().collect();
-                                    let more = shown.len().saturating_sub(3);
-                                    let state_ok = e.state == "ready";
-                                    view! {
-                                        <tr
-                                            class:row-sel=move || open.get().as_deref() == Some(id_sel.as_str())
-                                            on:click=move |_| open.set(Some(id.clone()))
-                                        >
-                                            <td class="ep">
-                                                <span class="ep-main">
-                                                    <span class="ico" inner_html=icons::svg(kind_of_workload(&e.workload))></span>
-                                                    <span class="name">{e.name.clone()}</span>
-                                                </span>
-                                                <small>{e.namespace.clone()}</small>
-                                            </td>
-                                            <td class="mono muted">{if e.endpoint_id > 0 { e.endpoint_id.to_string() } else { "–".into() }}</td>
-                                            <td class="mono">{e.identity}</td>
-                                            <td class="lbls">
-                                                {shown.into_iter().take(3).map(|l| {
-                                                    let short = l.strip_prefix("k8s:").unwrap_or(&l).to_string();
-                                                    view! { <span class="label-chip">{short}</span> }
-                                                }).collect_view()}
-                                                {(more > 0).then(|| view! { <span class="muted small">{format!(" +{more}")}</span> })}
-                                            </td>
-                                            <td class="mono">
-                                                {e.ipv4.clone()}
-                                                {(!e.ipv6.is_empty()).then(|| view! { <small class="muted">{e.ipv6.clone()}</small> })}
-                                            </td>
-                                            <td class="mono muted nowrap">{e.node.clone()}</td>
-                                            <td><span class="pill" class:v-forwarded=state_ok class:v-audit=!state_ok>{e.state.clone()}</span></td>
-                                            <td>{enforcement_badge(e.ingress_enforcing)}</td>
-                                            <td>{enforcement_badge(e.egress_enforcing)}</td>
-                                            <td class="mono nowrap">
-                                                {format!("↓{} ↑{}", fmt_rate(tin), fmt_rate(tout))}
-                                                {(tdrop > 0.0).then(|| view! { <small class="reason">{format!("{} dropped", fmt_rate(tdrop))}</small> })}
+                                    return view! {
+                                        <tr>
+                                            <td colspan="10" class="empty">
+                                                {msg}
                                             </td>
                                         </tr>
                                     }
-                                }).collect_view().into_any()
+                                        .into_any();
+                                }
+                                rows.get()
+                                    .into_iter()
+                                    .map(|e| {
+                                        let id = e.id.clone();
+                                        let id_sel = e.id.clone();
+                                        let (tin, tout, tdrop) = tr.get(&e.id).copied().unwrap_or_default();
+                                        let shown: Vec<String> = e
+                                            .labels
+                                            .iter()
+                                            .filter(|l| interesting(l))
+                                            .cloned()
+                                            .collect();
+                                        let more = shown.len().saturating_sub(3);
+                                        let state_ok = e.state == "ready";
+                                        view! {
+                                            <tr
+                                                class:row-sel=move || open.get().as_deref() == Some(id_sel.as_str())
+                                                on:click=move |_| open.set(Some(id.clone()))
+                                            >
+                                                <td class="ep">
+                                                    <span class="ep-main">
+                                                        <span
+                                                            class="ico"
+                                                            inner_html=icons::svg(kind_of_workload(&e.workload))
+                                                        ></span>
+                                                        <span class="name">{e.name.clone()}</span>
+                                                    </span>
+                                                    <small>{e.namespace.clone()}</small>
+                                                </td>
+                                                <td class="mono muted">
+                                                    {if e.endpoint_id > 0 {
+                                                        e.endpoint_id.to_string()
+                                                    } else {
+                                                        "–".into()
+                                                    }}
+                                                </td>
+                                                <td class="mono">{e.identity}</td>
+                                                <td class="lbls">
+                                                    {shown
+                                                        .into_iter()
+                                                        .take(3)
+                                                        .map(|l| {
+                                                            let short = l
+                                                                .strip_prefix("k8s:")
+                                                                .unwrap_or(&l)
+                                                                .to_string();
+                                                            view! { <span class="label-chip">{short}</span> }
+                                                        })
+                                                        .collect_view()}
+                                                    {(more > 0)
+                                                        .then(|| {
+                                                            view! {
+                                                                <span class="muted small">{format!(" +{more}")}</span>
+                                                            }
+                                                        })}
+                                                </td>
+                                                <td class="mono">
+                                                    {e.ipv4.clone()}
+                                                    {(!e.ipv6.is_empty())
+                                                        .then(|| {
+                                                            view! { <small class="muted">{e.ipv6.clone()}</small> }
+                                                        })}
+                                                </td>
+                                                <td class="mono muted nowrap">{e.node.clone()}</td>
+                                                <td>
+                                                    <span
+                                                        class="pill"
+                                                        class:v-forwarded=state_ok
+                                                        class:v-audit=!state_ok
+                                                    >
+                                                        {e.state.clone()}
+                                                    </span>
+                                                </td>
+                                                <td>{enforcement_badge(e.ingress_enforcing)}</td>
+                                                <td>{enforcement_badge(e.egress_enforcing)}</td>
+                                                <td class="mono nowrap">
+                                                    {format!("↓{} ↑{}", fmt_rate(tin), fmt_rate(tout))}
+                                                    {(tdrop > 0.0)
+                                                        .then(|| {
+                                                            view! {
+                                                                <small class="reason">
+                                                                    {format!("{} dropped", fmt_rate(tdrop))}
+                                                                </small>
+                                                            }
+                                                        })}
+                                                </td>
+                                            </tr>
+                                        }
+                                    })
+                                    .collect_view()
+                                    .into_any()
                             }}
                         </tbody>
                     </table>
                 </div>
-                <EndpointDetail open=open traffic=traffic/>
+                <EndpointDetail open=open traffic=traffic />
             </div>
         </div>
     }
@@ -283,7 +356,14 @@ fn EndpointDetail(open: RwSignal<Option<String>>, traffic: Memo<Traffic>) -> imp
         let id = open.get()?;
         let e = ctx.endpoints.with(|v| v.endpoints.iter().find(|e| e.id == id).cloned())?;
         let (tin, tout, tdrop) = traffic.with(|t| t.get(&id).copied().unwrap_or_default());
-        let row = |k: &'static str, v: String| (!v.is_empty()).then(|| view! { <span>{k}</span><b>{v}</b> });
+        let row = |k: &'static str, v: String| {
+            (!v.is_empty()).then(|| {
+                view! {
+                    <span>{k}</span>
+                    <b>{v}</b>
+                }
+            })
+        };
         let enf = |v: Option<bool>| match v {
             Some(true) => "enforced".to_string(),
             Some(false) => "not enforced (all allowed)".to_string(),
@@ -297,31 +377,37 @@ fn EndpointDetail(open: RwSignal<Option<String>>, traffic: Memo<Traffic>) -> imp
                         <span class="ico big" inner_html=icons::svg(kind_of_workload(&e.workload))></span>
                         <div>
                             <div class="title">{e.name.clone()}</div>
-                            <div class="sub">{format!("{} · namespace {}", kind_of_workload(&e.workload), e.namespace)}</div>
+                            <div class="sub">
+                                {format!("{} · namespace {}", kind_of_workload(&e.workload), e.namespace)}
+                            </div>
                         </div>
                     </div>
-                    <button class="x" on:click=move |_| open.set(None)>"✕"</button>
+                    <button class="x" on:click=move |_| open.set(None)>
+                        "✕"
+                    </button>
                 </div>
                 <div class="ep-actions">
-                    <button class="btn" on:click=move |_| ctx.show_on_map(&id_map)>"Show on map"</button>
-                    <button class="btn" on:click=move |_| {
-                        ctx.filter.set(format!("pod={id_flows}"));
-                        ctx.tab.set(Tab::Flows);
-                    }>"Show flows"</button>
+                    <button class="btn" on:click=move |_| ctx.show_on_map(&id_map)>
+                        "Show on map"
+                    </button>
+                    <button
+                        class="btn"
+                        on:click=move |_| {
+                            ctx.filter.set(format!("pod={id_flows}"));
+                            ctx.tab.set(Tab::Flows);
+                        }
+                    >
+                        "Show flows"
+                    </button>
                 </div>
                 <div class="kv">
                     {row("endpoint ID", if e.endpoint_id > 0 { e.endpoint_id.to_string() } else { String::new() })}
-                    {row("identity", e.identity.to_string())}
-                    {row("IPv4", e.ipv4.clone())}
-                    {row("IPv6", e.ipv6.clone())}
-                    {row("node", e.node.clone())}
-                    {row("state", e.state.clone())}
-                    {row("ingress", enf(e.ingress_enforcing))}
-                    {row("egress", enf(e.egress_enforcing))}
-                    {row("workload", e.workload.clone())}
-                    {row("service account", e.service_account.clone())}
-                    {row("named ports", e.named_ports.join(", "))}
-                    <span>"traffic"</span><b>{format!("in {} · out {} · dropped {}", fmt_rate(tin), fmt_rate(tout), fmt_rate(tdrop))}</b>
+                    {row("identity", e.identity.to_string())} {row("IPv4", e.ipv4.clone())}
+                    {row("IPv6", e.ipv6.clone())} {row("node", e.node.clone())} {row("state", e.state.clone())}
+                    {row("ingress", enf(e.ingress_enforcing))} {row("egress", enf(e.egress_enforcing))}
+                    {row("workload", e.workload.clone())} {row("service account", e.service_account.clone())}
+                    {row("named ports", e.named_ports.join(", "))} <span>"traffic"</span>
+                    <b>{format!("in {} · out {} · dropped {}", fmt_rate(tin), fmt_rate(tout), fmt_rate(tdrop))}</b>
                 </div>
                 <h4>"Identity labels"</h4>
                 <p class="muted small">"Click a label to filter by it."</p>

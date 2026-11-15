@@ -70,11 +70,7 @@ impl LabelSelector {
         if self.is_empty() {
             return "(all)".into();
         }
-        let mut parts: Vec<String> = self
-            .match_labels
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
+        let mut parts: Vec<String> = self.match_labels.iter().map(|(k, v)| format!("{k}={v}")).collect();
         for r in &self.match_expressions {
             parts.push(match r.operator.as_str() {
                 "Exists" => r.key.clone(),
@@ -128,16 +124,8 @@ mod tests {
         let s = LabelSelector {
             match_labels: BTreeMap::new(),
             match_expressions: vec![
-                Requirement {
-                    key: "tier".into(),
-                    operator: "In".into(),
-                    values: vec!["web".into(), "api".into()],
-                },
-                Requirement {
-                    key: "legacy".into(),
-                    operator: "DoesNotExist".into(),
-                    values: vec![],
-                },
+                Requirement { key: "tier".into(), operator: "In".into(), values: vec!["web".into(), "api".into()] },
+                Requirement { key: "legacy".into(), operator: "DoesNotExist".into(), values: vec![] },
             ],
         };
         assert!(s.matches(&labels(&[("tier", "api")])));

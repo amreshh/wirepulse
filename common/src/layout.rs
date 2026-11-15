@@ -162,13 +162,7 @@ fn cell(w: f64, h: f64, style: NodeStyle) -> (f64, f64) {
 }
 
 fn placed(x: f64, y: f64, (w, h): (f64, f64), style: NodeStyle) -> Placed {
-    Placed {
-        x,
-        y,
-        w,
-        h,
-        card: style == NodeStyle::Card,
-    }
+    Placed { x, y, w, h, card: style == NodeStyle::Card }
 }
 
 /// `aspect` is the viewport's width / height; rows are packed to roughly
@@ -195,10 +189,7 @@ fn flat(g: &AggGraph, level: Level, aspect: f64, style: LayoutStyle) -> Layout {
 
     if style.effective_container() == Container::Circle {
         // One spiral of namespaces; reserved entities on an outer ring.
-        let items: Vec<(&str, f64)> = inner
-            .iter()
-            .map(|n| (n.id.as_str(), node_radius(n, level) + 24.0))
-            .collect();
+        let items: Vec<(&str, f64)> = inner.iter().map(|n| (n.id.as_str(), node_radius(n, level) + 24.0)).collect();
         let (spiral, extent) = sunflower(&items);
         for (id, x, y, r) in spiral {
             let d = 2.0 * (r - 24.0);
@@ -212,18 +203,12 @@ fn flat(g: &AggGraph, level: Level, aspect: f64, style: LayoutStyle) -> Layout {
                 placed(ring * a.cos(), ring * a.sin(), node_size(n, level, NodeStyle::Circle), NodeStyle::Circle),
             );
         }
-        return Layout {
-            nodes,
-            ..Default::default()
-        };
+        return Layout { nodes, ..Default::default() };
     }
 
     // Grid of namespaces, then a row of external entities underneath.
-    let sizes: HashMap<&str, (f64, f64)> = g
-        .nodes
-        .iter()
-        .map(|n| (n.id.as_str(), node_size(n, level, style.node)))
-        .collect();
+    let sizes: HashMap<&str, (f64, f64)> =
+        g.nodes.iter().map(|n| (n.id.as_str(), node_size(n, level, style.node))).collect();
     let (_, gh, inner_pos) = grid(&inner, level, style.node, aspect);
     for (id, x, y) in inner_pos {
         let size = sizes[id.as_str()];
@@ -237,10 +222,7 @@ fn flat(g: &AggGraph, level: Level, aspect: f64, style: LayoutStyle) -> Layout {
             nodes.insert(id, placed(x, y + gh / 2.0 + eh / 2.0 + 30.0, size, style.node));
         }
     }
-    Layout {
-        nodes,
-        ..Default::default()
-    }
+    Layout { nodes, ..Default::default() }
 }
 
 /// Lays `items` out in a grid whose overall shape roughly matches `aspect`.
@@ -249,10 +231,8 @@ fn grid(items: &[&AggNode], level: Level, style: NodeStyle, aspect: f64) -> (f64
     if items.is_empty() {
         return (0.0, 0.0, Vec::new());
     }
-    let max = items
-        .iter()
-        .map(|n| node_size(n, level, style))
-        .fold((0.0_f64, 0.0_f64), |a, s| (a.0.max(s.0), a.1.max(s.1)));
+    let max =
+        items.iter().map(|n| node_size(n, level, style)).fold((0.0_f64, 0.0_f64), |a, s| (a.0.max(s.0), a.1.max(s.1)));
     let (cw, ch) = cell(max.0, max.1, style);
     let n = items.len();
     let cols = ((n as f64 * aspect * ch / cw).sqrt().round() as usize).clamp(1, n);
@@ -263,11 +243,7 @@ fn grid(items: &[&AggNode], level: Level, style: NodeStyle, aspect: f64) -> (f64
         .enumerate()
         .map(|(i, it)| {
             let (c, r) = (i % cols, i / cols);
-            (
-                it.id.clone(),
-                (c as f64 + 0.5) * cw - w / 2.0,
-                (r as f64 + 0.5) * ch - h / 2.0,
-            )
+            (it.id.clone(), (c as f64 + 0.5) * cw - w / 2.0, (r as f64 + 0.5) * ch - h / 2.0)
         })
         .collect();
     (w, h, pos)
@@ -322,10 +298,7 @@ fn grouped(g: &AggGraph, level: Level, aspect: f64, style: LayoutStyle) -> Layou
         members.sort_by(|a, b| a.id.cmp(&b.id));
         pending.push(match container {
             Container::Circle => {
-                let items: Vec<(&str, f64)> = members
-                    .iter()
-                    .map(|n| (n.id.as_str(), node_radius(n, level)))
-                    .collect();
+                let items: Vec<(&str, f64)> = members.iter().map(|n| (n.id.as_str(), node_radius(n, level))).collect();
                 let (spiral, r) = sunflower(&items);
                 Pending {
                     name,
@@ -341,10 +314,8 @@ fn grouped(g: &AggGraph, level: Level, aspect: f64, style: LayoutStyle) -> Layou
             Container::Box => {
                 let (gw, gh, pos) = grid(&members, level, style.node, 1.6);
                 let (w, h) = (gw + 2.0 * BOX_PAD, gh + BOX_HEADER + BOX_PAD);
-                let sizes: HashMap<&str, (f64, f64)> = members
-                    .iter()
-                    .map(|n| (n.id.as_str(), node_size(n, level, style.node)))
-                    .collect();
+                let sizes: HashMap<&str, (f64, f64)> =
+                    members.iter().map(|n| (n.id.as_str(), node_size(n, level, style.node))).collect();
                 Pending {
                     name,
                     w: w.max(150.0),
@@ -385,21 +356,9 @@ fn grouped(g: &AggGraph, level: Level, aspect: f64, style: LayoutStyle) -> Layou
         for (id, m) in p.members {
             nodes.insert(id, Placed { x: cx + m.x, y: cy + m.y, ..m });
         }
-        groups.push(GroupShape {
-            name: p.name,
-            x: cx,
-            y: cy,
-            w: p.w,
-            h: p.h,
-            rect: p.rect,
-            members: count,
-        });
+        groups.push(GroupShape { name: p.name, x: cx, y: cy, w: p.w, h: p.h, rect: p.rect, members: count });
     }
-    Layout {
-        nodes,
-        groups,
-        bounds: (0.0, 0.0, 0.0, 0.0),
-    }
+    Layout { nodes, groups, bounds: (0.0, 0.0, 0.0, 0.0) }
 }
 
 /// Places boxes left to right in rows no wider than `max_w`, aligned to the
@@ -538,14 +497,16 @@ fn layered(g: &AggGraph, level: Level, aspect: f64, style: NodeStyle) -> Layout 
     set_pos(&cols, &mut pos);
     for sweep in 0..6 {
         let forward = sweep % 2 == 0;
-        let range: Vec<usize> = if forward { (1..layers).collect() } else { (0..layers.saturating_sub(1)).rev().collect() };
+        let range: Vec<usize> =
+            if forward { (1..layers).collect() } else { (0..layers.saturating_sub(1)).rev().collect() };
         for l in range {
             let neighbours = if forward { &pred } else { &succ };
             let mut keyed: Vec<(f64, usize)> = cols[l]
                 .iter()
                 .map(|&v| {
                     let ns = &neighbours[v];
-                    let key = if ns.is_empty() { pos[v] } else { ns.iter().map(|&u| pos[u]).sum::<f64>() / ns.len() as f64 };
+                    let key =
+                        if ns.is_empty() { pos[v] } else { ns.iter().map(|&u| pos[u]).sum::<f64>() / ns.len() as f64 };
                     (key, v)
                 })
                 .collect();
@@ -597,11 +558,7 @@ fn layered(g: &AggGraph, level: Level, aspect: f64, style: NodeStyle) -> Layout 
             members: idle.len(),
         });
     }
-    Layout {
-        nodes,
-        groups,
-        bounds: (0.0, 0.0, 0.0, 0.0),
-    }
+    Layout { nodes, groups, bounds: (0.0, 0.0, 0.0, 0.0) }
 }
 
 // ---- helpers ------------------------------------------------------------------
@@ -665,11 +622,7 @@ mod tests {
                 });
             }
         }
-        Graph {
-            nodes,
-            edges: vec![],
-            generated_at_ms: 0,
-        }
+        Graph { nodes, edges: vec![], generated_at_ms: 0 }
     }
 
     fn edge(s: &str, t: &str) -> Edge {

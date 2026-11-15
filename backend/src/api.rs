@@ -94,9 +94,7 @@ async fn flow_detail(
     State(s): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<u64>,
 ) -> Result<Json<FlowDetail>, axum::http::StatusCode> {
-    s.flow_detail(id)
-        .map(Json)
-        .ok_or(axum::http::StatusCode::NOT_FOUND)
+    s.flow_detail(id).map(Json).ok_or(axum::http::StatusCode::NOT_FOUND)
 }
 
 async fn policies(State(s): State<Arc<AppState>>) -> Json<Vec<PolicyInfo>> {
@@ -212,10 +210,7 @@ mod tests {
     use super::*;
 
     fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
-        pairs
-            .iter()
-            .map(|(k, v)| (HeaderName::from_bytes(k.as_bytes()).unwrap(), v.parse().unwrap()))
-            .collect()
+        pairs.iter().map(|(k, v)| (HeaderName::from_bytes(k.as_bytes()).unwrap(), v.parse().unwrap())).collect()
     }
 
     #[test]

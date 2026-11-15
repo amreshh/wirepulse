@@ -14,12 +14,7 @@ use tracing::warn;
 
 const TYPES: [(PolicyKind, &str, &str, &str); 3] = [
     (PolicyKind::CiliumNetworkPolicy, "cilium.io", "v2", "CiliumNetworkPolicy"),
-    (
-        PolicyKind::CiliumClusterwideNetworkPolicy,
-        "cilium.io",
-        "v2",
-        "CiliumClusterwideNetworkPolicy",
-    ),
+    (PolicyKind::CiliumClusterwideNetworkPolicy, "cilium.io", "v2", "CiliumClusterwideNetworkPolicy"),
     (PolicyKind::NetworkPolicy, "networking.k8s.io", "v1", "NetworkPolicy"),
 ];
 
@@ -72,10 +67,7 @@ pub fn parse_all(
     objects: &[(PolicyKind, Value)],
     labels: &HashMap<String, BTreeMap<String, String>>,
 ) -> Vec<PolicyInfo> {
-    let mut v: Vec<PolicyInfo> = objects
-        .iter()
-        .filter_map(|(k, o)| parse(*k, o, labels))
-        .collect();
+    let mut v: Vec<PolicyInfo> = objects.iter().filter_map(|(k, o)| parse(*k, o, labels)).collect();
     v.sort_by(|a, b| {
         (a.namespace.as_deref().unwrap_or(""), &a.name).cmp(&(b.namespace.as_deref().unwrap_or(""), &b.name))
     });
@@ -83,20 +75,14 @@ pub fn parse_all(
 }
 
 fn count(spec: &Value, key: &str) -> u32 {
-    spec.get(key)
-        .and_then(Value::as_array)
-        .map_or(0, |a| a.len() as u32)
+    spec.get(key).and_then(Value::as_array).map_or(0, |a| a.len() as u32)
 }
 
 fn selector(v: Option<&Value>) -> Option<LabelSelector> {
     serde_json::from_value(v?.clone()).ok()
 }
 
-pub fn parse(
-    kind: PolicyKind,
-    obj: &Value,
-    labels: &HashMap<String, BTreeMap<String, String>>,
-) -> Option<PolicyInfo> {
+pub fn parse(kind: PolicyKind, obj: &Value, labels: &HashMap<String, BTreeMap<String, String>>) -> Option<PolicyInfo> {
     let meta = obj.get("metadata")?;
     let name = meta.get("name")?.as_str()?.to_string();
     let namespace = match kind {
@@ -155,10 +141,7 @@ pub fn parse(
     let valid = obj
         .pointer("/status/conditions")
         .and_then(Value::as_array)
-        .and_then(|c| {
-            c.iter()
-                .find(|c| c.get("type").and_then(Value::as_str) == Some("Valid"))
-        })
+        .and_then(|c| c.iter().find(|c| c.get("type").and_then(Value::as_str) == Some("Valid")))
         .and_then(|c| c.get("status").and_then(Value::as_str))
         .map(|s| s == "True");
 
@@ -174,11 +157,7 @@ pub fn parse(
         selected,
         host_policy: !node_selectors.is_empty(),
         valid,
-        created: meta
-            .get("creationTimestamp")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
+        created: meta.get("creationTimestamp").and_then(Value::as_str).unwrap_or_default().to_string(),
         yaml: to_yaml(obj),
     })
 }
@@ -205,11 +184,7 @@ mod tests {
 
     fn labels() -> HashMap<String, BTreeMap<String, String>> {
         let mk = |ns: &str, app: &str| -> BTreeMap<String, String> {
-            [
-                ("app".to_string(), app.to_string()),
-                ("io.kubernetes.pod.namespace".to_string(), ns.to_string()),
-            ]
-            .into()
+            [("app".to_string(), app.to_string()), ("io.kubernetes.pod.namespace".to_string(), ns.to_string())].into()
         };
         [
             ("shop/web-1".to_string(), mk("shop", "web")),

@@ -3,8 +3,8 @@
 
 use crate::flows::FlowAggregator;
 use common::{
-    ConfigView, EndpointsView, FlowDetail, FlowEvent, Graph, Info, Node, NodeKind, PolicyInfo,
-    ServerMsg, Status, EXTERNAL_GROUP,
+    ConfigView, EndpointsView, FlowDetail, FlowEvent, Graph, Info, Node, NodeKind, PolicyInfo, ServerMsg, Status,
+    EXTERNAL_GROUP,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,31 +50,19 @@ pub struct AppState {
 }
 
 pub fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 fn encode(msg: &ServerMsg) -> Arc<str> {
-    serde_json::to_string(msg)
-        .unwrap_or_else(|_| "{}".into())
-        .into()
+    serde_json::to_string(msg).unwrap_or_else(|_| "{}".into()).into()
 }
 
 impl AppState {
     pub fn new(demo: bool) -> Arc<Self> {
         let (tx, _) = broadcast::channel(64);
         Arc::new(Self {
-            info: Info {
-                version: env!("CARGO_PKG_VERSION").into(),
-                demo,
-                cluster_name: String::new(),
-            },
-            status: RwLock::new(Status {
-                demo,
-                ..Default::default()
-            }),
+            info: Info { version: env!("CARGO_PKG_VERSION").into(), demo, cluster_name: String::new() },
+            status: RwLock::new(Status { demo, ..Default::default() }),
             inventory: RwLock::default(),
             flows: Mutex::default(),
             recent: Mutex::new(VecDeque::with_capacity(RECENT_FLOWS)),
@@ -130,11 +118,7 @@ impl AppState {
     pub fn seen_flows(&self) -> (Option<i64>, HashSet<String>) {
         let d = self.details.lock().unwrap();
         let newest = d.iter().map(|f| f.event.time_ms).max();
-        let uuids = d
-            .iter()
-            .filter(|f| !f.uuid.is_empty())
-            .map(|f| f.uuid.clone())
-            .collect();
+        let uuids = d.iter().filter(|f| !f.uuid.is_empty()).map(|f| f.uuid.clone()).collect();
         (newest, uuids)
     }
 
@@ -189,11 +173,7 @@ impl AppState {
                 }
             }
         }
-        Graph {
-            nodes,
-            edges,
-            generated_at_ms: now_ms() as u64,
-        }
+        Graph { nodes, edges, generated_at_ms: now_ms() as u64 }
     }
 
     /// Runs forever: flushes flows every 500 ms and the graph every 2 s.
@@ -261,13 +241,10 @@ pub fn guess_workload(pod: &str) -> String {
     // Kubernetes name suffixes use an alphabet without vowels, so words such
     // as "service" are not mistaken for hashes.
     const ALPHABET: &str = "bcdfghjklmnpqrstvwxz2456789";
-    let is_hash =
-        |s: &str| (5..=10).contains(&s.len()) && s.chars().all(|c| ALPHABET.contains(c));
+    let is_hash = |s: &str| (5..=10).contains(&s.len()) && s.chars().all(|c| ALPHABET.contains(c));
     let base = if parts.len() >= 3 && is_hash(parts[parts.len() - 1]) && is_hash(parts[parts.len() - 2]) {
         parts[..parts.len() - 2].join("-")
-    } else if parts.len() >= 2
-        && (is_hash(parts[parts.len() - 1]) || parts[parts.len() - 1].parse::<u32>().is_ok())
-    {
+    } else if parts.len() >= 2 && (is_hash(parts[parts.len() - 1]) || parts[parts.len() - 1].parse::<u32>().is_ok()) {
         parts[..parts.len() - 1].join("-")
     } else {
         pod.to_string()

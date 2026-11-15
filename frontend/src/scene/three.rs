@@ -31,12 +31,7 @@ pub struct Cam {
 
 impl Default for Cam {
     fn default() -> Self {
-        Self {
-            target: (0.0, 0.0, 0.0),
-            yaw: -0.55,
-            pitch: 0.82,
-            dist: 2000.0,
-        }
+        Self { target: (0.0, 0.0, 0.0), yaw: -0.55, pitch: 0.82, dist: 2000.0 }
     }
 }
 
@@ -142,12 +137,7 @@ impl Scene {
             return None;
         }
         let f = self.focal() / depth;
-        Some(Projected {
-            x: self.size.0 / 2.0 + x1 * f,
-            y: self.size.1 / 2.0 - y2 * f,
-            f,
-            depth,
-        })
+        Some(Projected { x: self.size.0 / 2.0 + x1 * f, y: self.size.1 / 2.0 - y2 * f, f, depth })
     }
 
     pub(super) fn fit3d(&mut self) {
@@ -167,7 +157,12 @@ impl Scene {
         self.cam.target = (c.0 / n, c.1 / n, c.2 / n);
         let r = pts
             .iter()
-            .map(|p| ((p.0 - self.cam.target.0).powi(2) + (p.1 - self.cam.target.1).powi(2) + (p.2 - self.cam.target.2).powi(2)).sqrt())
+            .map(|p| {
+                ((p.0 - self.cam.target.0).powi(2)
+                    + (p.1 - self.cam.target.1).powi(2)
+                    + (p.2 - self.cam.target.2).powi(2))
+                .sqrt()
+            })
             .fold(1.0, f64::max);
         self.cam.dist = r * 2.5;
 
@@ -238,11 +233,7 @@ impl Scene {
             return;
         };
         let (w, h, _) = self.size;
-        let hidden = if w <= 760.0 {
-            s.y > h * 0.42
-        } else {
-            s.x > w - 370.0
-        };
+        let hidden = if w <= 760.0 { s.y > h * 0.42 } else { s.x > w - 370.0 };
         if hidden || s.x < 0.0 || s.y < 0.0 || s.x > w || s.y > h {
             self.cam.target = p;
         }
@@ -266,15 +257,11 @@ impl Scene {
         }
 
         // Project every node once.
-        let mut nodes: Vec<(&String, Projected, f64)> = self
-            .pos3
-            .iter()
-            .filter_map(|(id, p)| self.project(*p).map(|s| (id, s, self.r3(id))))
-            .collect();
+        let mut nodes: Vec<(&String, Projected, f64)> =
+            self.pos3.iter().filter_map(|(id, p)| self.project(*p).map(|s| (id, s, self.r3(id)))).collect();
         nodes.sort_by(|a, b| b.1.depth.total_cmp(&a.1.depth));
-        let (dmin, dmax) = nodes
-            .iter()
-            .fold((f64::MAX, f64::MIN), |(lo, hi), n| (lo.min(n.1.depth), hi.max(n.1.depth)));
+        let (dmin, dmax) =
+            nodes.iter().fold((f64::MAX, f64::MIN), |(lo, hi), n| (lo.min(n.1.depth), hi.max(n.1.depth)));
         // Far things fade a little: depth cue.
         let fog = |depth: f64| {
             if dmax - dmin < 1.0 {
@@ -413,11 +400,8 @@ impl Scene {
 
     fn draw_plates(&self, fog: &dyn Fn(f64) -> f64) {
         let c = &self.ctx;
-        let mut plates: Vec<(&Plate, f64)> = self
-            .plates
-            .iter()
-            .filter_map(|p| self.project((p.x, p.y, p.z)).map(|s| (p, s.depth)))
-            .collect();
+        let mut plates: Vec<(&Plate, f64)> =
+            self.plates.iter().filter_map(|p| self.project((p.x, p.y, p.z)).map(|s| (p, s.depth))).collect();
         plates.sort_by(|a, b| b.1.total_cmp(&a.1));
         for (p, depth) in plates {
             let outline: Vec<V3> = if p.round {
@@ -502,11 +486,7 @@ impl Scene {
             } else {
                 let hl = (dx * dx + dz * dz).sqrt().max(1e-6);
                 let side = hl * 0.08;
-                (
-                    mid.0 - dz / hl * side,
-                    mid.1 + (hl * 0.3).clamp(30.0, 900.0),
-                    mid.2 + dx / hl * side,
-                )
+                (mid.0 - dz / hl * side, mid.1 + (hl * 0.3).clamp(30.0, 900.0), mid.2 + dx / hl * side)
             };
             let mut pts = Vec::with_capacity(SAMPLES + 1);
             for i in 0..=SAMPLES {
@@ -529,10 +509,7 @@ impl Scene {
             let (ra, rb) = (self.r3(&e.source) * pts[0].f, self.r3(&e.target) * pts[SAMPLES].f);
             let (sa, sb) = ((pts[0].x, pts[0].y), (pts[SAMPLES].x, pts[SAMPLES].y));
             let first = pts.iter().position(|p| (p.x - sa.0).hypot(p.y - sa.1) > ra + 2.0).unwrap_or(0);
-            let last = pts
-                .iter()
-                .rposition(|p| (p.x - sb.0).hypot(p.y - sb.1) > rb + 2.0)
-                .unwrap_or(SAMPLES);
+            let last = pts.iter().rposition(|p| (p.x - sb.0).hypot(p.y - sb.1) > rb + 2.0).unwrap_or(SAMPLES);
             if last <= first {
                 continue;
             }
