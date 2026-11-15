@@ -62,15 +62,12 @@ where
 }
 
 pub fn build_inventory(pods: &[Arc<Pod>], namespaces: &[Arc<Namespace>]) -> Inventory {
-    let ns_labels: HashMap<String, BTreeMap<String, String>> = namespaces
-        .iter()
-        .map(|n| (n.name_any(), n.labels().clone()))
-        .collect();
+    let ns_labels: HashMap<String, BTreeMap<String, String>> =
+        namespaces.iter().map(|n| (n.name_any(), n.labels().clone())).collect();
     let mut inv = Inventory::default();
     for p in pods {
         let Some(node) = pod_node(p) else { continue };
-        inv.labels
-            .insert(node.id.clone(), policy_labels(p, ns_labels.get(&node.namespace)));
+        inv.labels.insert(node.id.clone(), policy_labels(p, ns_labels.get(&node.namespace)));
         inv.nodes.push(node);
     }
     inv.nodes.sort_by(|a, b| a.id.cmp(&b.id));
@@ -92,11 +89,7 @@ fn pod_node(p: &Pod) -> Option<Node> {
         workload: workload_of(p),
         namespace: ns,
         name,
-        node_name: p
-            .spec
-            .as_ref()
-            .and_then(|s| s.node_name.clone())
-            .unwrap_or_default(),
+        node_name: p.spec.as_ref().and_then(|s| s.node_name.clone()).unwrap_or_default(),
         ip: status.and_then(|s| s.pod_ip.clone()).unwrap_or_default(),
         phase,
     })
@@ -104,11 +97,7 @@ fn pod_node(p: &Pod) -> Option<Node> {
 
 /// `Deployment/api`, `StatefulSet/db`, `DaemonSet/cilium`, `CronJob/backup`, `Pod/x`.
 pub fn workload_of(p: &Pod) -> String {
-    let Some(owner) = p
-        .owner_references()
-        .iter()
-        .find(|o| o.controller == Some(true))
-    else {
+    let Some(owner) = p.owner_references().iter().find(|o| o.controller == Some(true)) else {
         return format!("Pod/{}", p.name_any());
     };
     match owner.kind.as_str() {
@@ -133,17 +122,10 @@ pub fn workload_of(p: &Pod) -> String {
 
 /// Pod labels plus the synthetic labels Cilium adds to every endpoint, so
 /// selectors such as `k8s:io.kubernetes.pod.namespace: shop` match.
-pub fn policy_labels(
-    p: &Pod,
-    ns_labels: Option<&BTreeMap<String, String>>,
-) -> BTreeMap<String, String> {
+pub fn policy_labels(p: &Pod, ns_labels: Option<&BTreeMap<String, String>>) -> BTreeMap<String, String> {
     let mut l = p.labels().clone();
     let ns = p.meta().namespace.clone().unwrap_or_default();
-    let sa = p
-        .spec
-        .as_ref()
-        .and_then(|s| s.service_account_name.clone())
-        .unwrap_or_else(|| "default".into());
+    let sa = p.spec.as_ref().and_then(|s| s.service_account_name.clone()).unwrap_or_else(|| "default".into());
     l.insert("io.kubernetes.pod.namespace".into(), ns);
     l.insert("io.cilium.k8s.policy.serviceaccount".into(), sa);
     if let Some(nl) = ns_labels {
@@ -183,15 +165,9 @@ mod tests {
 
     #[test]
     fn workloads() {
-        assert_eq!(
-            workload_of(&pod("api-5d8f-abcde", "ReplicaSet", "api-5d8f", Some("5d8f"))),
-            "Deployment/api"
-        );
+        assert_eq!(workload_of(&pod("api-5d8f-abcde", "ReplicaSet", "api-5d8f", Some("5d8f"))), "Deployment/api");
         assert_eq!(workload_of(&pod("db-0", "StatefulSet", "db", None)), "StatefulSet/db");
-        assert_eq!(
-            workload_of(&pod("backup-29000000-xyz", "Job", "backup-29000000", None)),
-            "CronJob/backup"
-        );
+        assert_eq!(workload_of(&pod("backup-29000000-xyz", "Job", "backup-29000000", None)), "CronJob/backup");
     }
 
     #[test]

@@ -51,7 +51,9 @@ pub fn PoliciesTab() -> impl IntoView {
 
     let kind_btn = move |k: Option<PolicyKind>, label: &'static str| {
         view! {
-            <button class:active=move || kind.get() == k on:click=move |_| kind.set(k)>{label}</button>
+            <button class:active=move || kind.get() == k on:click=move |_| kind.set(k)>
+                {label}
+            </button>
         }
     };
 
@@ -66,12 +68,13 @@ pub fn PoliciesTab() -> impl IntoView {
                     on:input=move |ev| q.set(event_target_value(&ev))
                 />
                 <div class="seg">
-                    {kind_btn(None, "All")}
-                    {kind_btn(Some(PolicyKind::CiliumNetworkPolicy), "CNP")}
+                    {kind_btn(None, "All")} {kind_btn(Some(PolicyKind::CiliumNetworkPolicy), "CNP")}
                     {kind_btn(Some(PolicyKind::CiliumClusterwideNetworkPolicy), "CCNP")}
                     {kind_btn(Some(PolicyKind::NetworkPolicy), "NetworkPolicy")}
                 </div>
-                <button class="btn" on:click=move |_| load_policies(ctx)>"Refresh"</button>
+                <button class="btn" on:click=move |_| load_policies(ctx)>
+                    "Refresh"
+                </button>
                 <span class="muted">{move || format!("{} policies", list.with(Vec::len))}</span>
             </div>
             <div class="split" class:has-open=move || open.get().is_some()>
@@ -81,37 +84,45 @@ pub fn PoliciesTab() -> impl IntoView {
                         if items.is_empty() {
                             return view! { <p class="empty">"No policies found."</p> }.into_any();
                         }
-                        items.into_iter().map(|p| {
-                            let key = p.key();
-                            let key_active = key.clone();
-                            view! {
-                                <div
-                                    class="card"
-                                    class:active=move || open.get().as_deref() == Some(key_active.as_str())
-                                    on:click=move |_| open.set(Some(key.clone()))
-                                >
-                                    <div class="card-head">
-                                        <span class=format!("kind k-{}", p.kind.short().to_lowercase())>{p.kind.short()}</span>
-                                        <span class="pname">{p.name.clone()}</span>
-                                        {p.namespace.clone().map(|n| view! { <span class="muted">{n}</span> })}
-                                        {(p.valid == Some(false)).then(|| view! { <span class="badge bad">"invalid"</span> })}
-                                        {p.host_policy.then(|| view! { <span class="badge">"host"</span> })}
+                        items
+                            .into_iter()
+                            .map(|p| {
+                                let key = p.key();
+                                let key_active = key.clone();
+                                view! {
+                                    <div
+                                        class="card"
+                                        class:active=move || open.get().as_deref() == Some(key_active.as_str())
+                                        on:click=move |_| open.set(Some(key.clone()))
+                                    >
+                                        <div class="card-head">
+                                            <span class=format!(
+                                                "kind k-{}",
+                                                p.kind.short().to_lowercase(),
+                                            )>{p.kind.short()}</span>
+                                            <span class="pname">{p.name.clone()}</span>
+                                            {p.namespace.clone().map(|n| view! { <span class="muted">{n}</span> })}
+                                            {(p.valid == Some(false))
+                                                .then(|| view! { <span class="badge bad">"invalid"</span> })}
+                                            {p.host_policy.then(|| view! { <span class="badge">"host"</span> })}
+                                        </div>
+                                        <code class="sel">{p.selector.clone()}</code>
+                                        <div class="card-foot">
+                                            <span>{rules_summary(&p)}</span>
+                                            <span class="muted">{format!("selects {} pods", p.selected.len())}</span>
+                                        </div>
                                     </div>
-                                    <code class="sel">{p.selector.clone()}</code>
-                                    <div class="card-foot">
-                                        <span>{rules_summary(&p)}</span>
-                                        <span class="muted">{format!("selects {} pods", p.selected.len())}</span>
-                                    </div>
-                                </div>
-                            }
-                        }).collect_view().into_any()
+                                }
+                            })
+                            .collect_view()
+                            .into_any()
                     }}
                 </div>
                 <div class="detail">
                     {move || {
                         let key = open.get()?;
                         let p = ctx.policies.with(|ps| ps.iter().find(|p| p.key() == key).cloned())?;
-                        Some(view! { <PolicyDetail p=p on_close=move || open.set(None)/> })
+                        Some(view! { <PolicyDetail p=p on_close=move || open.set(None) /> })
                     }}
                 </div>
             </div>
@@ -126,12 +137,13 @@ fn PolicyDetail(p: PolicyInfo, on_close: impl Fn() + Send + Sync + 'static) -> i
     let selected = p.selected.clone();
     view! {
         <div class="detail-head">
-            <button class="btn back" on:click=move |_| on_close()>"← Back"</button>
+            <button class="btn back" on:click=move |_| on_close()>
+                "← Back"
+            </button>
             <div>
                 <div class="title">{p.name.clone()}</div>
                 <div class="sub">
-                    {format!("{:?}", p.kind)}
-                    {p.namespace.clone().map(|n| format!(" · {n}"))}
+                    {format!("{:?}", p.kind)} {p.namespace.clone().map(|n| format!(" · {n}"))}
                     {(!p.created.is_empty()).then(|| format!(" · created {}", p.created))}
                 </div>
             </div>
@@ -147,14 +159,18 @@ fn PolicyDetail(p: PolicyInfo, on_close: impl Fn() + Send + Sync + 'static) -> i
             </button>
         </div>
         <div class="kv">
-            <span>"selector"</span><b class="mono">{p.selector.clone()}</b>
-            <span>"rules"</span><b>{rules_summary(&p)}</b>
+            <span>"selector"</span>
+            <b class="mono">{p.selector.clone()}</b>
+            <span>"rules"</span>
+            <b>{rules_summary(&p)}</b>
             <span>"status"</span>
-            <b>{match p.valid {
-                Some(true) => "valid",
-                Some(false) => "invalid",
-                None => "not reported",
-            }}</b>
+            <b>
+                {match p.valid {
+                    Some(true) => "valid",
+                    Some(false) => "invalid",
+                    None => "not reported",
+                }}
+            </b>
         </div>
         <h4>{format!("Selected pods ({})", selected.len())}</h4>
         {if selected.is_empty() {
@@ -162,21 +178,22 @@ fn PolicyDetail(p: PolicyInfo, on_close: impl Fn() + Send + Sync + 'static) -> i
                 <p class="muted">
                     {if p.host_policy { "Applies to nodes, not pods." } else { "No running pods match right now." }}
                 </p>
-            }.into_any()
+            }
+                .into_any()
         } else {
             view! {
                 <ul class="pods">
-                    {selected.into_iter().map(|id| {
-                        let ns = namespace_of(&id).to_string();
-                        let name = short_name(&id).to_string();
-                        view! {
-                            <li on:click=move |_| ctx.show_on_map(&id)>
-                                {name} <small>{ns}</small>
-                            </li>
-                        }
-                    }).collect_view()}
+                    {selected
+                        .into_iter()
+                        .map(|id| {
+                            let ns = namespace_of(&id).to_string();
+                            let name = short_name(&id).to_string();
+                            view! { <li on:click=move |_| ctx.show_on_map(&id)>{name} <small>{ns}</small></li> }
+                        })
+                        .collect_view()}
                 </ul>
-            }.into_any()
+            }
+                .into_any()
         }}
         <h4>"YAML"</h4>
         <pre class="yaml">{p.yaml}</pre>

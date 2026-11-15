@@ -168,12 +168,7 @@ impl Scene {
             if self.input.agg.nodes.is_empty() {
                 self.needs_fit = true;
             }
-            self.nodes = input
-                .agg
-                .nodes
-                .iter()
-                .map(|n| (n.id.clone(), n.clone()))
-                .collect();
+            self.nodes = input.agg.nodes.iter().map(|n| (n.id.clone(), n.clone())).collect();
         }
         self.input = input;
         if relayout {
@@ -200,9 +195,7 @@ impl Scene {
             return false;
         }
         let (lo, hi) = (a.x.min(b.x) + 1.0, a.x.max(b.x) - 1.0);
-        self.rows
-            .get(&(a.y.round() as i64))
-            .is_some_and(|xs| xs.iter().any(|&x| x > lo && x < hi))
+        self.rows.get(&(a.y.round() as i64)).is_some_and(|xs| xs.iter().any(|&x| x > lo && x < hi))
     }
 
     fn level(&self) -> Level {
@@ -213,10 +206,7 @@ impl Scene {
 
     fn to_world(&self, sx: f64, sy: f64) -> (f64, f64) {
         let (w, h, _) = self.size;
-        (
-            (sx - w / 2.0) / self.view.scale + self.view.x,
-            (sy - h / 2.0) / self.view.scale + self.view.y,
-        )
+        ((sx - w / 2.0) / self.view.scale + self.view.x, (sy - h / 2.0) / self.view.scale + self.view.y)
     }
 
     fn fit(&mut self) {
@@ -231,14 +221,8 @@ impl Scene {
         }
         // Room for labels under the outermost nodes and the overlays at the bottom.
         let (pad_x, pad_top, pad_bottom) = (40.0, 24.0, 56.0);
-        let scale = ((w - pad_x) / (x1 - x0))
-            .min((h - pad_top - pad_bottom) / (y1 - y0))
-            .clamp(0.03, 2.5);
-        self.view = View {
-            x: (x0 + x1) / 2.0,
-            y: (y0 + y1) / 2.0 + (pad_bottom - pad_top) / 2.0 / scale,
-            scale,
-        };
+        let scale = ((w - pad_x) / (x1 - x0)).min((h - pad_top - pad_bottom) / (y1 - y0)).clamp(0.03, 2.5);
+        self.view = View { x: (x0 + x1) / 2.0, y: (y0 + y1) / 2.0 + (pad_bottom - pad_top) / 2.0 / scale, scale };
         self.needs_fit = false;
     }
 
@@ -501,9 +485,7 @@ impl Scene {
     }
 
     fn dimming(&self) -> bool {
-        self.input.selected.is_some()
-            || !self.input.highlight.is_empty()
-            || !self.input.search.trim().is_empty()
+        self.input.selected.is_some() || !self.input.highlight.is_empty() || !self.input.search.trim().is_empty()
     }
 
     /// Selected node plus its neighbours, when something is selected.
@@ -554,11 +536,7 @@ impl Scene {
             if g.w * s > 60.0 {
                 c.set_font(&format!("600 {fs}px {FONT}"));
                 c.set_text_baseline("top");
-                c.set_fill_style_str(if neutral {
-                    "rgba(180,188,200,0.8)"
-                } else {
-                    "rgba(220,226,235,0.85)"
-                });
+                c.set_fill_style_str(if neutral { "rgba(180,188,200,0.8)" } else { "rgba(220,226,235,0.85)" });
                 let label = format!("{} · {}", g.name, g.members);
                 if g.rect {
                     c.set_text_align("left");
@@ -658,11 +636,7 @@ impl Scene {
         }
         let h = hue(&n.group);
         let active = n.flows_in + n.flows_out + n.internal_flows > 0.0;
-        format!(
-            "hsl({h},{}%,{}%)",
-            if active { 60 } else { 25 },
-            if active { 52 } else { 38 }
-        )
+        format!("hsl({h},{}%,{}%)", if active { 60 } else { 25 }, if active { 52 } else { 38 })
     }
 
     /// Strokes the icon for `n` centred on (x, y), `size` world units wide.
@@ -751,7 +725,10 @@ impl Scene {
         }
         let _ = c.fill_text(&label, p.x, p.y + r + 3.0 / s);
         // No namespace containers in the layered view: say where it lives.
-        if self.input.style.arrangement == Arrangement::Layered && n.kind == NodeKind::Pod && self.level() != Level::Namespace {
+        if self.input.style.arrangement == Arrangement::Layered
+            && n.kind == NodeKind::Pod
+            && self.level() != Level::Namespace
+        {
             c.set_fill_style_str("rgba(157,167,179,0.85)");
             c.set_font(&format!("{}px {FONT}", 10.0 / s));
             let _ = c.fill_text(&n.group, p.x, p.y + r + 16.0 / s);
@@ -867,11 +844,7 @@ impl Scene {
         }
 
         c.set_font(&format!("12px {FONT}"));
-        let tw = lines
-            .iter()
-            .filter_map(|l| c.measure_text(l).ok())
-            .map(|m| m.width())
-            .fold(0.0, f64::max);
+        let tw = lines.iter().filter_map(|l| c.measure_text(l).ok()).map(|m| m.width()).fold(0.0, f64::max);
         let (bw, bh) = (tw + 16.0, lines.len() as f64 * 16.0 + 10.0);
         let x = if px + 14.0 + bw > w { px - bw - 10.0 } else { px + 14.0 };
         let y = py + 12.0;
@@ -1063,44 +1036,64 @@ pub fn attach(scene: Rc<RefCell<Scene>>) {
     };
 
     let s = scene.clone();
-    on("pointerdown", true, Box::new(move |e| {
-        if let Some(e) = e.dyn_ref::<PointerEvent>() {
-            s.borrow_mut().pointer_down(e);
-        }
-    }));
+    on(
+        "pointerdown",
+        true,
+        Box::new(move |e| {
+            if let Some(e) = e.dyn_ref::<PointerEvent>() {
+                s.borrow_mut().pointer_down(e);
+            }
+        }),
+    );
     let s = scene.clone();
-    on("pointermove", true, Box::new(move |e| {
-        if let Some(e) = e.dyn_ref::<PointerEvent>() {
-            s.borrow_mut().pointer_move(e);
-        }
-    }));
+    on(
+        "pointermove",
+        true,
+        Box::new(move |e| {
+            if let Some(e) = e.dyn_ref::<PointerEvent>() {
+                s.borrow_mut().pointer_move(e);
+            }
+        }),
+    );
     for name in ["pointerup", "pointercancel"] {
         let s = scene.clone();
-        on(name, true, Box::new(move |e| {
-            let Some(e) = e.dyn_ref::<PointerEvent>() else { return };
-            // Release the borrow before touching signals.
-            let tapped = s.borrow_mut().pointer_up(e);
-            if let Some(hit) = tapped {
-                let signal = s.borrow().on_select;
-                signal.set(hit);
-            }
-        }));
+        on(
+            name,
+            true,
+            Box::new(move |e| {
+                let Some(e) = e.dyn_ref::<PointerEvent>() else { return };
+                // Release the borrow before touching signals.
+                let tapped = s.borrow_mut().pointer_up(e);
+                if let Some(hit) = tapped {
+                    let signal = s.borrow().on_select;
+                    signal.set(hit);
+                }
+            }),
+        );
     }
     let s = scene.clone();
-    on("pointerleave", true, Box::new(move |_| {
-        let mut s = s.borrow_mut();
-        s.hover = None;
-        s.pointer = None;
-    }));
+    on(
+        "pointerleave",
+        true,
+        Box::new(move |_| {
+            let mut s = s.borrow_mut();
+            s.hover = None;
+            s.pointer = None;
+        }),
+    );
     // Right-drag pans in 3D; don't open the browser menu.
     on("contextmenu", false, Box::new(|e| e.prevent_default()));
     let s = scene.clone();
-    on("wheel", false, Box::new(move |e| {
-        e.prevent_default();
-        if let Some(e) = e.dyn_ref::<WheelEvent>() {
-            s.borrow_mut().wheel(e);
-        }
-    }));
+    on(
+        "wheel",
+        false,
+        Box::new(move |e| {
+            e.prevent_default();
+            if let Some(e) = e.dyn_ref::<WheelEvent>() {
+                s.borrow_mut().wheel(e);
+            }
+        }),
+    );
 
     // requestAnimationFrame loop.
     type FrameCallback = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;

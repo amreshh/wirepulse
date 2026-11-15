@@ -32,11 +32,7 @@ struct Args {
     allowed_hosts: Vec<String>,
 
     /// hubble-relay gRPC address (plaintext).
-    #[arg(
-        long,
-        env = "HUBBLE_RELAY_ADDR",
-        default_value = "http://hubble-relay.kube-system.svc.cluster.local:80"
-    )]
+    #[arg(long, env = "HUBBLE_RELAY_ADDR", default_value = "http://hubble-relay.kube-system.svc.cluster.local:80")]
     hubble_relay: String,
 
     /// Namespace Cilium is installed in.
@@ -99,9 +95,7 @@ async fn main() -> anyhow::Result<()> {
     let app = api::router(state, &args.static_dir, hosts::AllowedHosts::new(&args.allowed_hosts));
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     info!(addr = %args.listen, "listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
     Ok(())
 }
 

@@ -6,7 +6,9 @@
 
 use crate::state::{now_ms, AppState, Inventory};
 use crate::{config, endpoints, policy};
-use common::{EndpointDetail, FlowDetail, FlowEvent, L7Detail, Node, NodeConfigOverride, NodeKind, PolicyKind, Verdict};
+use common::{
+    EndpointDetail, FlowDetail, FlowEvent, L7Detail, Node, NodeConfigOverride, NodeKind, PolicyKind, Verdict,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -48,17 +50,7 @@ struct Pattern {
 }
 
 const fn p(src: &'static str, dst: &'static str, port: u32, rate: f64, l7: &'static str) -> Pattern {
-    Pattern {
-        src,
-        dst,
-        proto: "TCP",
-        port,
-        rate,
-        dropped: false,
-        l7,
-        dns: "",
-        policy: "",
-    }
+    Pattern { src, dst, proto: "TCP", port, rate, dropped: false, l7, dns: "", policy: "" }
 }
 
 const PATTERNS: &[Pattern] = &[
@@ -84,11 +76,7 @@ const PATTERNS: &[Pattern] = &[
         policy: "deny payments/fraud-scoring-no-egress",
         ..p("payments/fraud-scoring", "reserved:world", 443, 0.4, "")
     },
-    Pattern {
-        dropped: true,
-        policy: "",
-        ..p("frontend/web", "payments/postgres", 5432, 0.3, "")
-    },
+    Pattern { dropped: true, policy: "", ..p("frontend/web", "payments/postgres", 5432, 0.3, "") },
     p("monitoring/vmagent", "shop/catalog", 9090, 0.3, "HTTP GET /metrics 200"),
     p("monitoring/vmagent", "payments/payments-api", 9090, 0.3, "HTTP GET /metrics 200"),
     p("monitoring/vmagent", "frontend/web", 9090, 0.3, "HTTP GET /metrics 200"),
@@ -174,11 +162,7 @@ impl Cluster {
         let old = &list[i];
         let base = old.name.rsplit_once('-').map(|(b, _)| b).unwrap_or(&old.name);
         let name = format!("{base}-{}", rng.suffix(5));
-        list[i] = Node {
-            id: format!("{}/{name}", old.namespace),
-            name,
-            ..old.clone()
-        };
+        list[i] = Node { id: format!("{}/{name}", old.namespace), name, ..old.clone() };
     }
 
     fn inventory(&self) -> Inventory {
@@ -319,9 +303,7 @@ fn event(cluster: &Cluster, rng: &mut Rng, pat: &Pattern, dns_query: &str) -> Ve
         drop_reason: if pat.dropped { "POLICY_DENIED".into() } else { String::new() },
         direction: if to_world { "egress" } else { "ingress" }.into(),
         l7: if pat.l7 == "DNS" {
-            l7.as_ref()
-                .map(|d| format!("DNS {} → {}", d.dns_query, d.dns_ips.join(", ")))
-                .unwrap_or_default()
+            l7.as_ref().map(|d| format!("DNS {} → {}", d.dns_query, d.dns_ips.join(", "))).unwrap_or_default()
         } else {
             l7_text.clone()
         },
@@ -349,7 +331,14 @@ fn event(cluster: &Cluster, rng: &mut Rng, pat: &Pattern, dns_query: &str) -> Ve
         None => (vec![pat.policy.to_string()], vec![]),
     };
     let base = FlowDetail {
-        uuid: format!("{:08x}-{:04x}-4{:03x}-a{:03x}-{:012x}", rng.next() as u32, rng.next() as u16, rng.next() % 4096, rng.next() % 4096, rng.next() % (1 << 48)),
+        uuid: format!(
+            "{:08x}-{:04x}-4{:03x}-a{:03x}-{:012x}",
+            rng.next() as u32,
+            rng.next() as u16,
+            rng.next() % 4096,
+            rng.next() % 4096,
+            rng.next() % (1 << 48)
+        ),
         source: src,
         destination: dst,
         ip_version: "IPv4".into(),
@@ -390,11 +379,7 @@ fn event(cluster: &Cluster, rng: &mut Rng, pat: &Pattern, dns_query: &str) -> Ve
 }
 
 fn dns_pattern(src: &'static str) -> Pattern {
-    Pattern {
-        proto: "UDP",
-        l7: "DNS",
-        ..p(src, "kube-system/coredns", 53, DNS_RATE, "")
-    }
+    Pattern { proto: "UDP", l7: "DNS", ..p(src, "kube-system/coredns", 53, DNS_RATE, "") }
 }
 
 pub async fn run(state: Arc<AppState>) {
@@ -447,10 +432,7 @@ pub async fn run(state: Arc<AppState>) {
             let expected = pat.rate * tick.as_secs_f64() * jitter;
             let count = expected.floor() as usize + usize::from(rng.f() < expected.fract());
             for _ in 0..count {
-                let q = dns_names
-                    .get(pat.src)
-                    .copied()
-                    .unwrap_or("kubernetes.default.svc.cluster.local");
+                let q = dns_names.get(pat.src).copied().unwrap_or("kubernetes.default.svc.cluster.local");
                 for ev in event(&cluster, &mut rng, pat, q) {
                     state.ingest(ev);
                 }
@@ -531,34 +513,50 @@ fn cnp(ns: &str, name: &str, spec: Value) -> (PolicyKind, Value) {
 
 fn policies() -> Vec<(PolicyKind, Value)> {
     vec![
-        cnp("shop", "redis-from-shop", json!({
-            "endpointSelector": {"matchLabels": {"app": "redis"}},
-            "ingress": [{
-                "fromEndpoints": [{"matchExpressions": [{"key": "app", "operator": "In", "values": ["cart", "catalog"]}]}],
-                "toPorts": [{"ports": [{"port": "6379", "protocol": "TCP"}]}]
-            }]
-        })),
-        cnp("payments", "postgres-lockdown", json!({
-            "endpointSelector": {"matchLabels": {"app": "postgres"}},
-            "ingress": [{
-                "fromEndpoints": [{"matchLabels": {"app": "payments-api"}}],
-                "toPorts": [{"ports": [{"port": "5432", "protocol": "TCP"}]}]
-            }]
-        })),
-        cnp("payments", "payments-egress", json!({
-            "endpointSelector": {"matchLabels": {"app": "payments-api"}},
-            "egress": [
-                {"toFQDNs": [{"matchName": "api.stripe.com"}],
-                 "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}]},
-                {"toEndpoints": [{"matchLabels": {"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s-app": "kube-dns"}}],
-                 "toPorts": [{"ports": [{"port": "53", "protocol": "ANY"}], "rules": {"dns": [{"matchPattern": "*"}]}}]},
-                {"toEndpoints": [{"matchLabels": {"app": "postgres"}}, {"matchLabels": {"app": "fraud-scoring"}}]}
-            ]
-        })),
-        cnp("payments", "fraud-scoring-no-egress", json!({
-            "endpointSelector": {"matchLabels": {"app": "fraud-scoring"}},
-            "egressDeny": [{"toEntities": ["world"]}]
-        })),
+        cnp(
+            "shop",
+            "redis-from-shop",
+            json!({
+                "endpointSelector": {"matchLabels": {"app": "redis"}},
+                "ingress": [{
+                    "fromEndpoints": [{"matchExpressions": [{"key": "app", "operator": "In", "values": ["cart", "catalog"]}]}],
+                    "toPorts": [{"ports": [{"port": "6379", "protocol": "TCP"}]}]
+                }]
+            }),
+        ),
+        cnp(
+            "payments",
+            "postgres-lockdown",
+            json!({
+                "endpointSelector": {"matchLabels": {"app": "postgres"}},
+                "ingress": [{
+                    "fromEndpoints": [{"matchLabels": {"app": "payments-api"}}],
+                    "toPorts": [{"ports": [{"port": "5432", "protocol": "TCP"}]}]
+                }]
+            }),
+        ),
+        cnp(
+            "payments",
+            "payments-egress",
+            json!({
+                "endpointSelector": {"matchLabels": {"app": "payments-api"}},
+                "egress": [
+                    {"toFQDNs": [{"matchName": "api.stripe.com"}],
+                     "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}]},
+                    {"toEndpoints": [{"matchLabels": {"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s-app": "kube-dns"}}],
+                     "toPorts": [{"ports": [{"port": "53", "protocol": "ANY"}], "rules": {"dns": [{"matchPattern": "*"}]}}]},
+                    {"toEndpoints": [{"matchLabels": {"app": "postgres"}}, {"matchLabels": {"app": "fraud-scoring"}}]}
+                ]
+            }),
+        ),
+        cnp(
+            "payments",
+            "fraud-scoring-no-egress",
+            json!({
+                "endpointSelector": {"matchLabels": {"app": "fraud-scoring"}},
+                "egressDeny": [{"toEntities": ["world"]}]
+            }),
+        ),
         (
             PolicyKind::CiliumClusterwideNetworkPolicy,
             json!({

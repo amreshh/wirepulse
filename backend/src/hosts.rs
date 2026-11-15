@@ -41,14 +41,8 @@ impl AllowedHosts {
             return true;
         }
         let name = normalize(strip_port(host));
-        let bare = name
-            .strip_prefix('[')
-            .and_then(|n| n.strip_suffix(']'))
-            .unwrap_or(&name);
-        bare.parse::<IpAddr>().is_ok()
-            || name == "localhost"
-            || name.ends_with(".localhost")
-            || self.lists(&name)
+        let bare = name.strip_prefix('[').and_then(|n| n.strip_suffix(']')).unwrap_or(&name);
+        bare.parse::<IpAddr>().is_ok() || name == "localhost" || name.ends_with(".localhost") || self.lists(&name)
     }
 
     /// Whether `name` (no port) matches a name given with `--allowed-hosts`.
@@ -57,9 +51,7 @@ impl AllowedHosts {
     pub fn lists(&self, name: &str) -> bool {
         let name = normalize(name);
         self.names.iter().any(|n| match n.strip_prefix("*.") {
-            Some(domain) => name
-                .strip_suffix(domain)
-                .is_some_and(|sub| sub.len() > 1 && sub.ends_with('.')),
+            Some(domain) => name.strip_suffix(domain).is_some_and(|sub| sub.len() > 1 && sub.ends_with('.')),
             None => *n == name,
         })
     }
@@ -88,10 +80,21 @@ mod tests {
     #[test]
     fn built_in_names() {
         let h = AllowedHosts::default();
-        for ok in ["localhost:8080", "LOCALHOST", "localhost.", "app.localhost:8081", "127.0.0.1:8080", "10.0.3.7", "[::1]:8080", "[fd00::5]"] {
+        for ok in [
+            "localhost:8080",
+            "LOCALHOST",
+            "localhost.",
+            "app.localhost:8081",
+            "127.0.0.1:8080",
+            "10.0.3.7",
+            "[::1]:8080",
+            "[fd00::5]",
+        ] {
             assert!(h.allows(ok), "{ok}");
         }
-        for bad in ["evil.example", "evil.example:8080", "localhost.evil.example", "127.0.0.1.nip.io", "[evil.example]:80", ""] {
+        for bad in
+            ["evil.example", "evil.example:8080", "localhost.evil.example", "127.0.0.1.nip.io", "[evil.example]:80", ""]
+        {
             assert!(!h.allows(bad), "{bad}");
         }
     }

@@ -104,8 +104,8 @@ pub struct Filter {
 
 /// Kinds accepted before `=`, for suggestions.
 pub const KINDS: &[&str] = &[
-    "label=", "from:label=", "to:label=", "pod=", "from:pod=", "to:pod=", "ns=", "from:ns=", "to:ns=",
-    "workload=", "ip=", "dns=", "identity=", "port=", "protocol=", "verdict=", "node=", "policy=",
+    "label=", "from:label=", "to:label=", "pod=", "from:pod=", "to:pod=", "ns=", "from:ns=", "to:ns=", "workload=",
+    "ip=", "dns=", "identity=", "port=", "protocol=", "verdict=", "node=", "policy=",
 ];
 
 impl Filter {
@@ -114,10 +114,7 @@ impl Filter {
         for token in input.split_whitespace() {
             match parse_term(token) {
                 Ok(t) => f.terms.push(t),
-                Err(message) => f.errors.push(ParseError {
-                    token: token.to_string(),
-                    message,
-                }),
+                Err(message) => f.errors.push(ParseError { token: token.to_string(), message }),
             }
         }
         f
@@ -191,12 +188,7 @@ fn parse_term(token: &str) -> Result<Term, String> {
         if rest.is_empty() {
             return Err("empty term".into());
         }
-        return Ok(Term {
-            negate,
-            side,
-            kind: Kind::Text(rest.to_lowercase()),
-            raw,
-        });
+        return Ok(Term { negate, side, kind: Kind::Text(rest.to_lowercase()), raw });
     };
     if value.is_empty() {
         return Err(format!("{key}= needs a value"));
@@ -204,10 +196,7 @@ fn parse_term(token: &str) -> Result<Term, String> {
     let v = value.to_string();
     let kind = match key.to_ascii_lowercase().as_str() {
         "label" | "labels" => match v.split_once('=') {
-            Some((k, val)) => Kind::Label {
-                key: k.to_string(),
-                value: Some(val.to_string()),
-            },
+            Some((k, val)) => Kind::Label { key: k.to_string(), value: Some(val.to_string()) },
             None => Kind::Label { key: v, value: None },
         },
         "pod" => Kind::Pod(v),
@@ -302,9 +291,7 @@ pub fn split_label(label: &str) -> (Option<&str>, &str, Option<&str>) {
         None => (label, None),
     };
     match lhs.split_once(':') {
-        Some((src, key))
-            if !src.is_empty() && src.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') =>
-        {
+        Some((src, key)) if !src.is_empty() && src.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') => {
             (Some(src), key, value)
         }
         _ => (None, lhs, value),
@@ -394,7 +381,10 @@ fn endpoint_matches(kind: &Kind, e: &EndpointRef) -> bool {
 }
 
 fn text_matches_endpoint(s: &str, e: &EndpointRef) -> bool {
-    e.id.to_lowercase().contains(s) || e.ip.contains(s) || e.dns.to_lowercase().contains(s) || e.workload.to_lowercase().contains(s)
+    e.id.to_lowercase().contains(s)
+        || e.ip.contains(s)
+        || e.dns.to_lowercase().contains(s)
+        || e.workload.to_lowercase().contains(s)
 }
 
 fn term_matches_flow(t: &Term, f: &FlowRef) -> bool {
@@ -447,13 +437,7 @@ mod tests {
         let f = Filter::parse("label=app=web !from:ns=shop to-pod=db port=5432 junk=1 port=x hello");
         assert_eq!(f.terms.len(), 5);
         assert_eq!(f.errors.len(), 2);
-        assert_eq!(
-            f.terms[0].kind,
-            Kind::Label {
-                key: "app".into(),
-                value: Some("web".into())
-            }
-        );
+        assert_eq!(f.terms[0].kind, Kind::Label { key: "app".into(), value: Some("web".into()) });
         assert!(f.terms[1].negate);
         assert_eq!(f.terms[1].side, Side::From);
         assert_eq!(f.terms[2].side, Side::To);
@@ -482,8 +466,22 @@ mod tests {
     fn direction_negation_and_grouping() {
         let web_l = labels(&["k8s:app=web"]);
         let db_l = labels(&["k8s:app=db"]);
-        let web = EndpointRef { id: "shop/web-1", workload: "Deployment/web", ip: "10.0.1.5", identity: 100, labels: &web_l, dns: "" };
-        let db = EndpointRef { id: "pay/db-0", workload: "StatefulSet/db", ip: "10.0.2.9", identity: 200, labels: &db_l, dns: "" };
+        let web = EndpointRef {
+            id: "shop/web-1",
+            workload: "Deployment/web",
+            ip: "10.0.1.5",
+            identity: 100,
+            labels: &web_l,
+            dns: "",
+        };
+        let db = EndpointRef {
+            id: "pay/db-0",
+            workload: "StatefulSet/db",
+            ip: "10.0.2.9",
+            identity: 200,
+            labels: &db_l,
+            dns: "",
+        };
         let f = flow(web, db, 5432, false);
 
         let m = |s: &str| Filter::parse(s).matches_flow(&f);

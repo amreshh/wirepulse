@@ -54,25 +54,13 @@ async fn load_node_configs(client: &Client) -> Vec<NodeConfigOverride> {
     Vec::new()
 }
 
-pub fn build_view(
-    source: String,
-    data: &BTreeMap<String, String>,
-    overrides: Vec<NodeConfigOverride>,
-) -> ConfigView {
-    ConfigView {
-        source,
-        entries: entries(data.iter()),
-        overrides,
-    }
+pub fn build_view(source: String, data: &BTreeMap<String, String>, overrides: Vec<NodeConfigOverride>) -> ConfigView {
+    ConfigView { source, entries: entries(data.iter()), overrides }
 }
 
 fn entries<'a>(it: impl Iterator<Item = (&'a String, &'a String)>) -> Vec<ConfigEntry> {
     let mut v: Vec<ConfigEntry> = it
-        .map(|(k, v)| ConfigEntry {
-            key: k.clone(),
-            value: v.clone(),
-            category: config_category(k).into(),
-        })
+        .map(|(k, v)| ConfigEntry { key: k.clone(), value: v.clone(), category: config_category(k).into() })
         .collect();
     v.sort_by(|a, b| a.key.cmp(&b.key));
     v
@@ -84,16 +72,10 @@ pub fn parse_node_config(obj: &Value) -> Option<NodeConfigOverride> {
     let defaults: BTreeMap<String, String> = spec
         .get("defaults")
         .and_then(Value::as_object)
-        .map(|m| {
-            m.iter()
-                .map(|(k, v)| (k.clone(), v.as_str().map_or_else(|| v.to_string(), String::from)))
-                .collect()
-        })
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.as_str().map_or_else(|| v.to_string(), String::from))).collect())
         .unwrap_or_default();
-    let selector: LabelSelector = spec
-        .get("nodeSelector")
-        .and_then(|s| serde_json::from_value(s.clone()).ok())
-        .unwrap_or_default();
+    let selector: LabelSelector =
+        spec.get("nodeSelector").and_then(|s| serde_json::from_value(s.clone()).ok()).unwrap_or_default();
     Some(NodeConfigOverride {
         namespace: meta.get("namespace").and_then(Value::as_str).unwrap_or_default().into(),
         name: meta.get("name")?.as_str()?.into(),

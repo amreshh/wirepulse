@@ -256,12 +256,7 @@ pub struct PolicyInfo {
 
 impl PolicyInfo {
     pub fn key(&self) -> String {
-        format!(
-            "{}/{}/{}",
-            self.kind.short(),
-            self.namespace.as_deref().unwrap_or("-"),
-            self.name
-        )
+        format!("{}/{}/{}", self.kind.short(), self.namespace.as_deref().unwrap_or("-"), self.name)
     }
 }
 
@@ -291,7 +286,10 @@ pub struct ConfigView {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Info {
+    /// The release (e.g. `1.2.3`), or the crate version for other builds.
     pub version: String,
+    /// The git commit the build came from; empty when not built from CI or the Dockerfile.
+    pub commit: String,
     pub demo: bool,
     pub cluster_name: String,
 }
@@ -309,22 +307,26 @@ pub fn config_category(key: &str) -> &'static str {
     } else if has(&["ipam", "cidr", "pool", "ipv4-native", "ipv6-native"]) {
         "IPAM"
     } else if has(&[
-        "kube-proxy",
-        "nodeport",
-        "loadbalancer",
-        "lb-",
-        "bgp",
-        "service",
-        "maglev",
-        "dsr",
-        "gateway-api",
-        "ingress",
+        "kube-proxy", "nodeport", "loadbalancer", "lb-", "bgp", "service", "maglev", "dsr", "gateway-api", "ingress",
         "l2-announce",
     ]) {
         "Load balancing"
     } else if has(&[
-        "routing", "tunnel", "vxlan", "geneve", "masquerade", "mtu", "devices", "endpoint-routes",
-        "auto-direct", "bandwidth", "ipv4", "ipv6", "cluster-id", "cluster-name", "clustermesh",
+        "routing",
+        "tunnel",
+        "vxlan",
+        "geneve",
+        "masquerade",
+        "mtu",
+        "devices",
+        "endpoint-routes",
+        "auto-direct",
+        "bandwidth",
+        "ipv4",
+        "ipv6",
+        "cluster-id",
+        "cluster-name",
+        "clustermesh",
     ]) {
         "Networking"
     } else if has(&["bpf", "ct-", "nat-", "map"]) {

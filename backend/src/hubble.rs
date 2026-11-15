@@ -97,11 +97,7 @@ fn request(newest: Option<i64>, now: i64) -> GetFlowsRequest {
                 ..Default::default()
             }
         }
-        _ => GetFlowsRequest {
-            number: BACKFILL,
-            follow: true,
-            ..Default::default()
-        },
+        _ => GetFlowsRequest { number: BACKFILL, follow: true, ..Default::default() },
     }
 }
 
@@ -148,10 +144,7 @@ pub fn endpoint_id(ep: &Endpoint) -> String {
 }
 
 fn workload(ep: &Endpoint) -> String {
-    ep.workloads
-        .first()
-        .map(|w| format!("{}/{}", w.kind, w.name))
-        .unwrap_or_default()
+    ep.workloads.first().map(|w| format!("{}/{}", w.kind, w.name)).unwrap_or_default()
 }
 
 fn verdict(v: i32) -> Verdict {
@@ -169,13 +162,7 @@ fn verdict(v: i32) -> Verdict {
 
 fn policy_names(ps: &[flow::Policy]) -> Vec<String> {
     ps.iter()
-        .map(|p| {
-            if p.namespace.is_empty() {
-                p.name.clone()
-            } else {
-                format!("{}/{}", p.namespace, p.name)
-            }
-        })
+        .map(|p| if p.namespace.is_empty() { p.name.clone() } else { format!("{}/{}", p.namespace, p.name) })
         .collect()
 }
 
@@ -203,7 +190,13 @@ fn tcp_flags(f: &flow::TcpFlags) -> String {
     .join(" ")
 }
 
-fn endpoint_detail(ep: Option<&Endpoint>, ip: &str, port: u32, svc: Option<&flow::Service>, names: &[String]) -> EndpointDetail {
+fn endpoint_detail(
+    ep: Option<&Endpoint>,
+    ip: &str,
+    port: u32,
+    svc: Option<&flow::Service>,
+    names: &[String],
+) -> EndpointDetail {
     EndpointDetail {
         id: ep.map(endpoint_id).unwrap_or_else(|| "unknown".into()),
         namespace: ep.map(|e| e.namespace.clone()).unwrap_or_default(),
@@ -213,22 +206,16 @@ fn endpoint_detail(ep: Option<&Endpoint>, ip: &str, port: u32, svc: Option<&flow
         ip: ip.to_string(),
         port,
         labels: ep.map(|e| e.labels.clone()).unwrap_or_default(),
-        service: svc
-            .filter(|s| !s.name.is_empty())
-            .map(|s| format!("{}/{}", s.namespace, s.name))
-            .unwrap_or_default(),
+        service: svc.filter(|s| !s.name.is_empty()).map(|s| format!("{}/{}", s.namespace, s.name)).unwrap_or_default(),
         names: names.to_vec(),
     }
 }
 
 pub fn convert(f: &flow::Flow) -> FlowDetail {
     let (protocol, src_port, dst_port, flags) = match f.l4.as_ref().and_then(|l| l.protocol.as_ref()) {
-        Some(layer4::Protocol::Tcp(t)) => (
-            "TCP",
-            t.source_port,
-            t.destination_port,
-            t.flags.as_ref().map(tcp_flags).unwrap_or_default(),
-        ),
+        Some(layer4::Protocol::Tcp(t)) => {
+            ("TCP", t.source_port, t.destination_port, t.flags.as_ref().map(tcp_flags).unwrap_or_default())
+        }
         Some(layer4::Protocol::Udp(u)) => ("UDP", u.source_port, u.destination_port, String::new()),
         Some(layer4::Protocol::Sctp(s)) => ("SCTP", s.source_port, s.destination_port, String::new()),
         Some(layer4::Protocol::IcmPv4(_)) => ("ICMPv4", 0, 0, String::new()),
@@ -291,9 +278,7 @@ pub fn convert(f: &flow::Flow) -> FlowDetail {
 
     let v = verdict(f.verdict);
     let drop_reason = if matches!(v, Verdict::Dropped | Verdict::Error) {
-        flow::DropReason::try_from(f.drop_reason_desc)
-            .map(|d| d.as_str_name().to_string())
-            .unwrap_or_default()
+        flow::DropReason::try_from(f.drop_reason_desc).map(|d| d.as_str_name().to_string()).unwrap_or_default()
     } else {
         String::new()
     };
@@ -330,11 +315,7 @@ pub fn convert(f: &flow::Flow) -> FlowDetail {
         time_ms: f
             .time
             .as_ref()
-            .map(|t| {
-                t.seconds
-                    .saturating_mul(1000)
-                    .saturating_add(i64::from(t.nanos) / 1_000_000)
-            })
+            .map(|t| t.seconds.saturating_mul(1000).saturating_add(i64::from(t.nanos) / 1_000_000))
             .unwrap_or_else(now_ms),
         node: f.node_name.clone(),
         source: source.id.clone(),
@@ -410,20 +391,14 @@ mod relay_tests {
             workloads: if workload.is_empty() {
                 vec![]
             } else {
-                vec![flow::Workload {
-                    name: workload.into(),
-                    kind: "Deployment".into(),
-                }]
+                vec![flow::Workload { name: workload.into(), kind: "Deployment".into() }]
             },
             ..Default::default()
         }
     }
 
     fn flow_resp(f: flow::Flow) -> GetFlowsResponse {
-        GetFlowsResponse {
-            response_types: Some(ResponseTypes::Flow(f)),
-            ..Default::default()
-        }
+        GetFlowsResponse { response_types: Some(ResponseTypes::Flow(f)), ..Default::default() }
     }
 
     #[tonic::async_trait]
@@ -432,10 +407,7 @@ mod relay_tests {
         type GetAgentEventsStream = Boxed<GetAgentEventsResponse>;
         type GetDebugEventsStream = Boxed<GetDebugEventsResponse>;
 
-        async fn get_flows(
-            &self,
-            req: Request<GetFlowsRequest>,
-        ) -> Result<Response<Self::GetFlowsStream>, Status> {
+        async fn get_flows(&self, req: Request<GetFlowsRequest>) -> Result<Response<Self::GetFlowsStream>, Status> {
             let calls = {
                 let mut r = self.requests.lock().unwrap();
                 r.push(req.into_inner());
@@ -444,10 +416,7 @@ mod relay_tests {
             let now = prost_types::Timestamp::from(std::time::SystemTime::now());
             let tcp = |port| {
                 Some(flow::Layer4 {
-                    protocol: Some(layer4::Protocol::Tcp(flow::Tcp {
-                        destination_port: port,
-                        ..Default::default()
-                    })),
+                    protocol: Some(layer4::Protocol::Tcp(flow::Tcp { destination_port: port, ..Default::default() })),
                 })
             };
             let mut items = vec![
@@ -538,9 +507,7 @@ mod relay_tests {
         let requests = Arc::new(Mutex::new(Vec::new()));
         tokio::spawn(
             tonic::transport::Server::builder()
-                .add_service(ObserverServer::new(FakeRelay {
-                    requests: requests.clone(),
-                }))
+                .add_service(ObserverServer::new(FakeRelay { requests: requests.clone() }))
                 .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
         );
 

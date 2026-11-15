@@ -44,11 +44,7 @@ async fn list(client: &Client, version: &str, kind: &str) -> Result<Vec<Value>, 
     let ar = ApiResource::from_gvk(&GroupVersionKind::gvk("cilium.io", version, kind));
     let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
     let list = api.list(&ListParams::default()).await?;
-    Ok(list
-        .items
-        .iter()
-        .filter_map(|o| serde_json::to_value(o).ok())
-        .collect())
+    Ok(list.items.iter().filter_map(|o| serde_json::to_value(o).ok()).collect())
 }
 
 async fn load(client: &Client) -> (&'static str, Vec<(Source, Value)>) {
@@ -106,11 +102,7 @@ pub fn build_view(source: &str, mut endpoints: Vec<EndpointInfo>, inv: &Inventor
         .filter(|(id, _)| !have.contains(id.as_str()))
         .map(|(id, l)| (id.clone(), k8s_labels(l)))
         .collect();
-    EndpointsView {
-        source: source.to_string(),
-        endpoints,
-        pod_labels,
-    }
+    EndpointsView { source: source.to_string(), endpoints, pod_labels }
 }
 
 fn k8s_labels(l: &BTreeMap<String, String>) -> Vec<String> {
