@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="100%" height="100%">
+  <defs>
+    <!-- Brand Gradients -->
+    <linearGradient id="cyberGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00E5FF" />
+      <stop offset="100%" stop-color="#BD00FF" />
+    </linearGradient>
+    <linearGradient id="pulseGradient" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#BD00FF" />
+      <stop offset="100%" stop-color="#00E5FF" />
+    </linearGradient>
+    
+    <!-- Neon Glow Filter -->
+    <filter id="neonGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="blur1" />
+      <feGaussianBlur stdDeviation="12" result="blur2" />
+      <feMerge>
+        <feMergeNode in="blur2" />
+        <feMergeNode in="blur1" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Deep Abyss Background -->
+  <rect width="800" height="400" fill="#0A0A14" />
+
+  <!-- Background Grid (Optional subtle cluster nodes feel) -->
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+    <circle cx="2" cy="2" r="1.5" fill="#ffffff" opacity="0.03" />
+  </pattern>
+  <rect width="800" height="400" fill="url(#grid)" />
+
+  <!-- Logo Mark (Hexagon + Circuitry + Pulse) -->
+  <g transform="translate(160, 200)">
+    
+    <!-- Outer Kubernetes Hexagon (Subtle) -->
+    <polygon points="0,-100 86.6,-50 86.6,50 0,100 -86.6,50 -86.6,-50" fill="none" stroke="url(#cyberGradient)" stroke-width="2" opacity="0.3" />
+
+    <g filter="url(#neonGlow)">
+      <!-- Circuit Traces (The "Wires") -->
+      <path d="M-86.6,-50 L-45,-25 L-45,25 L-86.6,50" fill="none" stroke="url(#cyberGradient)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.8" />
+      <path d="M86.6,-50 L45,-25 L45,25 L86.6,50" fill="none" stroke="url(#cyberGradient)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="0.8" />
+      
+      <!-- Top and Bottom Node Connections -->
+      <line x1="0" y1="-100" x2="0" y2="-60" stroke="#00E5FF" stroke-width="5" stroke-linecap="round" opacity="0.8" />
+      <line x1="0" y1="100" x2="0" y2="60" stroke="#BD00FF" stroke-width="5" stroke-linecap="round" opacity="0.8" />
+
+      <!-- Inner Pulse Line (The "Heartbeat" / eBPF traces) -->
+      <path d="M-110,0 L-60,0 L-35,-55 L5,75 L35,-35 L60,0 L110,0" fill="none" stroke="url(#pulseGradient)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+            
+      <!-- Outer Node Dots -->
+      <circle cx="-86.6" cy="-50" r="7" fill="#00E5FF" />
+      <circle cx="-86.6" cy="50" r="7" fill="#BD00FF" />
+      <circle cx="86.6" cy="-50" r="7" fill="#00E5FF" />
+      <circle cx="86.6" cy="50" r="7" fill="#BD00FF" />
+      <circle cx="0" cy="-100" r="7" fill="#00E5FF" />
+      <circle cx="0" cy="100" r="7" fill="#BD00FF" />
+    </g>
+  </g>
+
+  <!-- Typography -->
+  <g transform="translate(310, 215)">
+    <!-- Main Brand Name -->
+    <text x="0" y="0" font-family="&#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-size="76" font-weight="800" fill="#FFFFFF" letter-spacing="-1">
+      Wire<tspan fill="#00E5FF">Pulse</tspan>
+    </text>
+    
+    <!-- Tagline -->
+    <text x="5" y="40" font-family="&#39;Segoe UI&#39;, Roboto, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#8B8B9E" letter-spacing="3.5">
+      eBPF NETWORK OBSERVABILITY
+    </text>
+  </g>
+</svg>
