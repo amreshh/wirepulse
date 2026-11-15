@@ -6,6 +6,7 @@ use crate::filter_bar::FilterBar;
 use crate::flows::labels_view;
 use crate::icons;
 use crate::util::fmt_rate;
+use crate::yaml::Yaml;
 use common::aggregate::kind_of_workload;
 use common::filter::EndpointRef;
 use common::EndpointInfo;
@@ -413,7 +414,10 @@ fn EndpointDetail(open: RwSignal<Option<String>>, traffic: Memo<Traffic>) -> imp
                 <p class="muted small">"Click a label to filter by it."</p>
                 {labels_view(ctx, e.labels.clone(), "")}
                 <h4>"Object"</h4>
-                <pre class="yaml">{move || yaml.get().unwrap_or_else(|| "Loading…".into())}</pre>
+                {move || match yaml.get() {
+                    Some(text) => view! { <Yaml text=text /> }.into_any(),
+                    None => view! { <pre class="yaml">"Loading…"</pre> }.into_any(),
+                }}
             </aside>
         })
     }

@@ -2,6 +2,7 @@
 
 use crate::app::{load_policies, use_ctx, Tab};
 use crate::util::{namespace_of, short_name};
+use crate::yaml::Yaml;
 use common::{PolicyInfo, PolicyKind};
 use leptos::prelude::*;
 
@@ -196,6 +197,6 @@ fn PolicyDetail(p: PolicyInfo, on_close: impl Fn() + Send + Sync + 'static) -> i
                 .into_any()
         }}
         <h4>"YAML"</h4>
-        <pre class="yaml">{p.yaml}</pre>
+        <Yaml text=p.yaml />
     }
 }
