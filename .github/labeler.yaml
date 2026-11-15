@@ -1,0 +1,54 @@
+# Areas of the code, by the files a change touches:
+# - Pull requests get a label for each area they touch (workflows/labeler.yaml).
+#   A label that doesn't exist yet is created the first time it's used; set
+#   its colour and description under Issues → Labels.
+# - Release notes list each commit under the first area it touches, in this
+#   order (scripts/release-notes.sh), so put the more specific areas first.
+
+# Bypassed vulnerabilities (and the rest of the dependency review settings):
+# a maintainer's decision worth a second look.
+security:
+  - changed-files:
+      - any-glob-to-any-file: .github/dependency-review.yaml
+
+image:
+  - changed-files:
+      - any-glob-to-any-file: [Dockerfile, .dockerignore, .github/release/**]
+
+# The vendored Cilium/Hubble protos (before backend, which they're part of).
+protos:
+  - changed-files:
+      - any-glob-to-any-file: backend/proto/**
+
+backend:
+  - changed-files:
+      - any-glob-to-any-file: backend/**
+
+frontend:
+  - changed-files:
+      - any-glob-to-any-file: frontend/**
+
+common:
+  - changed-files:
+      - any-glob-to-any-file: common/**
+
+deploy:
+  - changed-files:
+      - any-glob-to-any-file: deploy/**
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/workflows/**
+          - .github/actions/**
+          - .github/scripts/**
+          - .github/*.yaml
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file: Cargo.lock
+
+# The same files ci.yaml treats as docs (no tests, build or release).
+docs:
+  - changed-files:
+      - any-glob-to-any-file: ["**/*.md", docs/**]

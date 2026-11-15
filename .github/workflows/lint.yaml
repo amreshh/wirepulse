@@ -1,0 +1,153 @@
+name: lint
+
+# Formatting and lints, called by the ci workflow (alongside the tests,
+# before the image is built). Can also be run by hand from the Actions tab.
+#
+#   fmt          rustfmt (rustfmt.toml) and leptosfmt for view! markup
+#                (leptosfmt.toml). Fix with: leptosfmt frontend/src && cargo fmt --all
+#   clippy       warnings are errors
+#   typos        spell check (exceptions in typos.toml)
+#   actionlint   the workflow files, including their shell scripts
+#   hadolint     the Dockerfile; its findings are also a table in the run
+#                summary and the pull request comment
+#   kubeconform  the Kubernetes manifests in deploy/
+#
+# Actions are pinned to commits; Dependabot keeps them current.
+on:
+  workflow_call:
+    inputs:
+      code-passed:
+        description: >-
+          This code already passed rustfmt and clippy (only the docs changed
+          since), so they're skipped. The rest still runs: it's quick, and
+          the spell check covers the docs.
+        type: boolean
+        default: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    if: ${{ !inputs.code-passed }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt
+
+      # Keeps the leptosfmt build below between runs.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Install leptosfmt
+        run: cargo install leptosfmt --locked --version 0.1.33
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      # The markup inside view! macros, which rustfmt leaves alone.
+      - name: leptosfmt
+        run: leptosfmt --check frontend/src
+
+  clippy:
+    if: ${{ !inputs.code-passed }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup target add wasm32-unknown-unknown
+
+      # Caches ~/.cargo and target/ between runs, keyed on Cargo.lock and the toolchain.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # The frontend only runs in the browser, so it's checked for wasm on its own.
+      - name: Clippy
+        run: |
+          cargo clippy --locked -p backend -p common --all-targets -- -D warnings
+          cargo clippy --locked -p frontend --target wasm32-unknown-unknown -- -D warnings
+
+  typos:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85 # v1.52.0
+
+  actionlint:
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: 1.7.12
+      SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Also runs ShellCheck (installed on the runner) on the run: scripts.
+      - name: actionlint
+        run: |
+          file="actionlint_${VERSION}_linux_amd64.tar.gz"
+          curl -fsSLO "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/${file}"
+          echo "${SHA256}  ${file}" | sha256sum -c -
+          tar -xzf "$file" actionlint
+          ./actionlint -color
+
+  hadolint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # SARIF, for the table below.
+      - name: hadolint report
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+          format: sarif
+          output-file: hadolint.sarif
+          no-fail: true
+
+      # The findings as a table: in the run summary and the pull request comment.
+      - name: hadolint table
+        uses: $/.github/actions/sarif-summary
+        with:
+          sarif: hadolint.sarif
+          name: hadolint
+          title: Dockerfile lint (hadolint)
+
+      # Same check, readable in the log, and fails the job.
+      - name: hadolint
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+  kubeconform:
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: 0.8.0
+      SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Validates what `kubectl apply -f deploy/` would send.
+      - name: kubeconform
+        run: |
+          curl -fsSLO "https://github.com/yannh/kubeconform/releases/download/v${VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${SHA256}  kubeconform-linux-amd64.tar.gz" | sha256sum -c -
+          tar -xzf kubeconform-linux-amd64.tar.gz kubeconform
+          ./kubeconform -strict -summary deploy/

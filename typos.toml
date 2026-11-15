@@ -1,0 +1,12 @@
+# Spell check (crate-ci/typos). Words and patterns that look like typos but aren't.
+
+[files]
+extend-exclude = [
+    # Vendored from Cilium as they are; fixing their spelling would only make
+    # updating them harder.
+    "backend/proto/",
+]
+
+[default.extend-words]
+abd = "abd" # a glob test string that must not match "a*c" (filter.rs)
+nd = "nd"   # "node" as a closure argument (layout.rs)

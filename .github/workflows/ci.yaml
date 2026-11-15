@@ -1,0 +1,684 @@
+name: ci
+
+# What runs when:
+#
+#   push to dev    tests, then build ghcr.io/<repo>:<short-sha> and :latest, to
+#                  try out (skipped when the code didn't change, e.g. dev
+#                  reset to main after a merge)
+#   pull request   tests, lint, security and dependency review side by side,
+#                  then build the image and smoke-test it (in demo mode: no
+#                  cluster needed). Once it passes, it's pushed as
+#                  :code-<fingerprint> (not from forks) for the release. A
+#                  comment on the PR sums up the results, with the dependency
+#                  review, hadolint and zizmor findings and the smoke test's
+#                  checks.
+#   push to main   the release, with no checks: the branch rules only merge a
+#                  pull request whose checks passed, up to date with main, so
+#                  main has exactly the files it checked. The release: the
+#                  image the pull request tested, with the next version (see
+#                  below) set in it (same layers, nothing rebuilt), pushed as
+#                  :1.2.3, :1.2, :1 (built fresh only when there's none), a
+#                  git tag v1.2.3 and a GitHub Release with generated notes
+#   tag v1.2.3     every check, then :1.2.3, :1.2, :1 (manual; the tag must be
+#                  on main). No major-only tag while on 0.x: 0.x minors can
+#                  break. A tag like v1.2.3-rc1 gets only that tag.
+#
+#   Changes to nothing but the docs (Markdown files and docs/) skip the tests,
+#   build and release once the rest has passed them. A pull request still runs
+#   the quick checks, the spell check among them (see plan).
+#
+#   plan ─┬─ test ─────────┐
+#         ├─ lint ─────────┤               ┌─ release (main)
+#         ├─ security ─────┼─── build ─────┤
+#         └─ dependencies ─┘               └─ report (pull requests)
+#
+# lint and security are in their own files and called from here; security
+# also runs weekly on its own. CodeQL is a workflow of its own (codeql.yaml),
+# which also runs on main. dependencies runs GitHub's dependency review on
+# pull requests: they fail when they add or change a dependency to a version
+# with a known HIGH or CRITICAL vulnerability (settings and bypasses in
+# .github/dependency-review.yaml). Vulnerabilities found later in released
+# dependencies come from Dependabot alerts, which open the fixes as pull
+# requests. hadolint and zizmor fail the checks on any finding, and their
+# findings are tables in the run summary and the pull request comment.
+# `checks` sums up the checks for branch rules.
+#
+# Version on main: bumps the patch of the latest vX.Y.Z tag. Put "#minor" or
+# "#major" in a commit message (e.g. the merge commit) to bump that instead.
+# With no tags yet, the first release uses the version in Cargo.toml.
+on:
+  push:
+    branches: [dev, main]
+    # Version-shaped tags only, so a stray tag like "vtest" never triggers a release.
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Never cancel a release halfway (image pushed but no tag/release yet).
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# No token permissions unless a job asks for them.
+permissions: {}
+
+env:
+  # The docs, as git pathspecs separated by spaces. Every other file is the
+  # code, which the fingerprints in plan and build cover.
+  DOCS: ":(exclude)*.md :(exclude)docs/"
+
+jobs:
+  # Decides what this run has to do. Docs changes (DOCS) don't need the tests,
+  # an image or a release:
+  # - Pull requests and dev pushes skip the checks when the code (every file
+  #   but the docs) already passed them: the build job remembers each code
+  #   version that passed, in the Actions cache. This also skips dev after
+  #   it's reset to main. Pull requests skip only the slow ones (tests,
+  #   rustfmt, clippy): the rest is quick, and the spell check covers the
+  #   docs. Dependency review always runs.
+  # - main runs no checks (its pull request did) and releases only when more
+  #   than the docs changed since the last release.
+  # Manual runs and tags always run everything.
+  plan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      previous: ${{ steps.next.outputs.previous }}
+      key: ${{ steps.code.outputs.key }}
+      tested: ${{ steps.tested.outputs.cache-hit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the release tags, on main
+          persist-credentials: false
+
+      # dev pushes only test and build; everything else runs every check.
+      - name: Fingerprint the code
+        id: code
+        run: |
+          read -ra docs <<< "$DOCS"
+          code=$(git ls-files -s -- . "${docs[@]}" | sha256sum | cut -d' ' -f1)
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/dev ]; then
+            checks=dev
+          else
+            checks=all
+          fi
+          echo "key=ci-passed-$checks-$code" >> "$GITHUB_OUTPUT"
+
+      # Only looks the key up: nothing from the cache goes into a build.
+      - name: Did this code already pass?
+        id: tested
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/dev')
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ci-passed
+          key: ${{ steps.code.outputs.key }}
+          lookup-only: true
+
+      - name: Say so
+        if: steps.tested.outputs.cache-hit == 'true'
+        run: echo "This code already passed the checks in an earlier run, and only the docs changed since. Skipping them."
+
+      - name: Work out next version
+        id: next
+        if: github.ref == 'refs/heads/main'
+        run: |
+          stable='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          if git tag --points-at HEAD | grep -qE "$stable"; then
+            echo "HEAD is already released, nothing to do"
+            exit 0
+          fi
+
+          last=$(git tag -l 'v*' --sort=-v:refname | grep -E "$stable" | head -1 || true)
+          read -ra docs <<< "$DOCS"
+          if [ -n "$last" ] && git diff --quiet "$last" HEAD -- . "${docs[@]}"; then
+            echo "Only the docs changed since $last, nothing to release"
+            exit 0
+          fi
+          if [ -z "$last" ]; then
+            version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          else
+            IFS=. read -r major minor patch <<< "${last#v}"
+            log=$(git log "$last..HEAD" --format=%B)
+            if grep -q '#major' <<< "$log"; then
+              version="$((major + 1)).0.0"
+            elif grep -q '#minor' <<< "$log"; then
+              version="$major.$((minor + 1)).0"
+            else
+              version="$major.$minor.$((patch + 1))"
+            fi
+          fi
+
+          echo "Releasing v$version (previous: ${last:-none})"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "previous=$last" >> "$GITHUB_OUTPUT"
+
+  # Every run except code that already passed, pushes to main (their pull
+  # request ran the tests), and manual runs on main with nothing to release.
+  test:
+    needs: plan
+    if: >-
+      !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.tested != 'true' &&
+      !(github.event_name == 'push' && github.ref == 'refs/heads/main') &&
+      (github.ref != 'refs/heads/main' || needs.plan.outputs.version != '')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      # Caches ~/.cargo and target/ between runs, keyed on Cargo.lock and the toolchain.
+      # zizmor's cache-poisoning warning doesn't apply: this cache only speeds up
+      # compiling the tests and never reaches the image, and caches from PRs
+      # can't be read by main or tag runs.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # zizmor: ignore[cache-poisoning] v2.9.3
+
+      # Unit tests, and the backend against a fake hubble-relay. The frontend
+      # is built natively too, so tests of its plain logic run here (not in a
+      # browser).
+      - name: Tests
+        run: cargo test --locked -p backend -p common -p frontend
+
+  # lint and security: pull requests, tags and manual runs. Not pushes to dev
+  # (which get the quick tests + build) or to main (whose pull request ran
+  # everything).
+
+  # Formatting and lints (lint.yaml). Without rustfmt and clippy when the code already passed.
+  lint:
+    needs: plan
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      !(github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')) &&
+      (github.ref != 'refs/heads/main' || needs.plan.outputs.version != '')
+    uses: $/.github/workflows/lint.yaml
+    with:
+      code-passed: ${{ needs.plan.outputs.tested == 'true' }}
+    permissions:
+      contents: read
+
+  # zizmor on the workflows (security.yaml).
+  security:
+    needs: plan
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      !(github.event_name == 'push' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')) &&
+      (github.ref != 'refs/heads/main' || needs.plan.outputs.version != '')
+    uses: $/.github/workflows/security.yaml
+    permissions:
+      contents: read
+      security-events: write # zizmor's report
+
+  # Pull requests: GitHub's dependency review fails when one adds a dependency
+  # (a crate, or an action the workflows use), or changes one to a version,
+  # with a known HIGH or CRITICAL vulnerability (settings and bypasses in
+  # .github/dependency-review.yaml). Released dependencies are watched by
+  # Dependabot alerts instead, which open the fixes as pull requests. Runs on
+  # every pull request, also when the code already passed: new
+  # vulnerabilities are published every day.
+  dependencies:
+    needs: plan
+    if: >-
+      !cancelled() && needs.plan.result == 'success' &&
+      github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      # For the settings file.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Dependency review
+        id: review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          config-file: ./.github/dependency-review.yaml
+
+      # Its summary, for the pull request comment, with a heading the size of
+      # the other tables' there.
+      - name: Keep the summary
+        if: ${{ !cancelled() }}
+        env:
+          SUMMARY: ${{ steps.review.outputs.comment-content }}
+        run: |
+          if [ -n "$SUMMARY" ]; then
+            printf '%s\n' "${SUMMARY/<h1>Dependency Review<\/h1>/<h2>Dependency review</h2>}" \
+              > "$RUNNER_TEMP/dependency-review-summary.md"
+          fi
+
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scan-summary-dependency-review
+          path: ${{ runner.temp }}/dependency-review-summary.md
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The one check to require in branch rules: fails when any check failed or
+  # was cancelled. (A skipped job counts as passed, so requiring build alone
+  # would let a failed lint through: build is then skipped.)
+  checks:
+    needs: [plan, test, lint, security, dependencies]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: All checks passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "plan, test, lint, security, dependencies: $RESULTS"
+          case " $RESULTS " in
+            *" failure "* | *" cancelled "*) exit 1 ;;
+          esac
+
+  # Runs when the tests passed and no other check failed (lint and security
+  # are skipped on dev pushes), and on pushes to main with something to
+  # release, where nothing runs before it: its pull request passed the checks.
+  build:
+    needs: [plan, test, lint, security, dependencies]
+    if: >-
+      !cancelled() &&
+      (needs.test.result == 'success' ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.plan.outputs.version != '')) &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # Pull requests: the head commit (the one WIREPULSE_COMMIT names), not
+      # GitHub's test merge commit. (Empty on other events: the default.)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Of exactly the files built here: every file but the docs, which
+      # aren't in the image. Pull requests push the image they tested as
+      # :code-<fingerprint>, and main releases the one with its fingerprint.
+      - name: Fingerprint the code
+        id: code
+        run: |
+          read -ra docs <<< "$DOCS"
+          code=$(git ls-files -s -- . "${docs[@]}" | sha256sum | cut -d' ' -f1)
+          echo "code=${code:0:20}" >> "$GITHUB_OUTPUT"
+
+      - name: Check release tag is on main
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag ${GITHUB_REF_NAME} points at a commit that is not on main"
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Pull requests from forks get a read-only token: they push nothing.
+      - name: Log in to GHCR
+        if: ${{ !github.event.pull_request.head.repo.fork }}
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Labels and annotations: the description comes from the repo's
+      # description on GitHub, the source, revision and version from the run.
+      # The pushed image is an index (the image plus its provenance
+      # attestation), and GHCR's package page reads an index's annotations,
+      # not the image's labels, so the annotations go on the index too.
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+          # metadata-action reads the license from a LICENSE file, and there is none.
+          EXTRA: |
+            org.opencontainers.image.title=wirepulse
+            org.opencontainers.image.authors=amreshh (https://github.com/amreshh)
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}#readme
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
+          labels: ${{ env.EXTRA }}
+          annotations: ${{ env.EXTRA }}
+          # On main, semver tags come from the computed version; on tag pushes, from the tag.
+          tags: |
+            type=sha,prefix=,format=short,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=semver,pattern={{version}},value=${{ needs.plan.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.plan.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.plan.outputs.version }},enable=${{ !startsWith(needs.plan.outputs.version, '0.') && !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/dev' }}
+            type=ref,event=pr
+
+      # Which build this is, for /api/info (WIREPULSE_VERSION and
+      # WIREPULSE_COMMIT in the Dockerfile): the version on main and for tags,
+      # none for dev and pull requests.
+      - name: Version
+        id: version
+        env:
+          NEXT: ${{ needs.plan.outputs.version }}
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) version=${GITHUB_REF_NAME#v} ;;
+            *) version=$NEXT ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # main: release the image its pull request built and smoke-tested,
+      # found by the code's fingerprint, instead of building it again. It's
+      # taken by digest and gets the release's version and commit as
+      # settings (.github/release/Dockerfile: the same layers, nothing
+      # recompiled). Without one (a pull request from a fork, which can't
+      # push), it's built as usual.
+      - name: Find the image the pull request tested
+        id: promote
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          CODE: ${{ steps.code.outputs.code }}
+        run: |
+          image="${IMAGE,,}"
+          if digest=$(docker buildx imagetools inspect "$image:code-$CODE" --format '{{json .Manifest}}' | jq -er .digest); then
+            echo "Releasing $image:code-$CODE ($digest), the image its pull request tested"
+            echo "source=$image@$digest" >> "$GITHUB_OUTPUT"
+          else
+            echo "No tested image of this code ($image:code-$CODE), building it"
+          fi
+
+      # Pull requests: built to check that it builds and works (below), and
+      # pushed only once it does.
+      - name: Build
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            WIREPULSE_COMMIT=${{ github.event.pull_request.head.sha }}
+            WIREPULSE_VERSION=${{ steps.version.outputs.version }}
+          load: true
+          tags: wirepulse:pr
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Pull requests: start the image and check that it answers, so an image
+      # that doesn't work can't be merged, and so released: main releases
+      # images built from exactly the files a pull request checked. (Not on
+      # dev pushes: dev is work in progress.) It runs in demo mode, which
+      # feeds a synthetic cluster through the same code paths as real data.
+      # The results are a table in the run summary and the pull request
+      # comment; when a check fails, the container's log follows in the job
+      # log.
+      - name: Smoke test
+        if: github.event_name == 'pull_request'
+        env:
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          docker run --detach --name smoke --publish 127.0.0.1:8080:8080 wirepulse:pr --demo > /dev/null
+          trap 'docker rm --force smoke > /dev/null' EXIT
+          url=http://127.0.0.1:8080
+
+          # Each check is a function; after the first failure the rest don't run.
+          rows=()
+          failed=""
+          check() { # <what it checks> <function>
+            if [ -n "$failed" ]; then
+              rows+=("| $1 | ⏭️ not run |")
+            elif "$2"; then
+              rows+=("| $1 | ✅ |")
+            else
+              rows+=("| $1 | ❌ failed |")
+              failed=$1
+            fi
+          }
+          # Retried while the server starts.
+          healthz() { curl -fsS --retry 10 --retry-delay 1 --retry-all-errors "$url/healthz" > /dev/null; }
+          # The frontend made it into the image (index.html and the wasm it loads).
+          page() {
+            local html wasm
+            html=$(curl -fsS "$url/")
+            grep -q '<title>wirepulse</title>' <<< "$html" || return 1
+            wasm=$(grep -oE '[^"'\'' ]+\.wasm' <<< "$html" | head -1)
+            [ -n "$wasm" ] && curl -fsS -o /dev/null "$url/${wasm#/}"
+          }
+          # It reports the commit the image was built from, in demo mode.
+          info() { jq -e --arg sha "$SHA" '.commit == $sha and .demo' <<< "$(curl -fsS "$url/api/info")" > /dev/null; }
+          # The demo cluster reached the map (retried: it fills in as the server starts).
+          graph() {
+            for _ in $(seq 10); do
+              jq -e '.nodes | length > 0' <<< "$(curl -fsS "$url/api/graph")" > /dev/null && return 0
+              sleep 1
+            done
+            return 1
+          }
+          # Requests for other host names are refused (DNS rebinding protection).
+          hosts() { [ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' "$url/api/info")" = 403 ]; }
+
+          check "It starts, and \`/healthz\` answers" healthz
+          check "\`/\` is the app's page, and its WASM loads" page
+          check "\`/api/info\` answers, for this commit (${SHA:0:7}), in demo mode" info
+          check "\`/api/graph\` has the demo cluster's nodes" graph
+          check "Other host names are refused" hosts
+
+          size=$(docker image inspect wirepulse:pr --format '{{.Size}}')
+          mb=$(awk -v b="$size" 'BEGIN { printf "%.1f", b / 1e6 }')
+          {
+            echo "## Smoke test"
+            echo
+            echo "This pull request's image ($mb MB), started with \`--demo\` and checked."
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            printf '%s\n' "${rows[@]}"
+          } > "$RUNNER_TEMP/smoke-summary.md"
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/smoke-summary.md"
+          if [ -n "$failed" ]; then
+            echo "::error::Smoke test failed: $failed"
+            echo "--- The container's log:"
+            docker logs smoke
+            exit 1
+          fi
+
+      # The table, for the pull request comment.
+      - if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scan-summary-smoke
+          path: ${{ runner.temp }}/smoke-summary.md
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # Pull requests: the image that passed the smoke test, for main to
+      # release when this one merges. (Not from forks: they can't push.)
+      - name: Push the tested image
+        if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          CODE: ${{ steps.code.outputs.code }}
+        run: |
+          image="${IMAGE,,}:code-$CODE"
+          docker tag wirepulse:pr "$image"
+          docker push "$image"
+
+      - name: Build and push
+        if: github.event_name != 'pull_request' && steps.promote.outputs.source == ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            WIREPULSE_COMMIT=${{ github.sha }}
+            WIREPULSE_VERSION=${{ steps.version.outputs.version }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The tested image with the release tags and labels, and main's commit:
+      # the one the release tag points at, with the same code as the pull
+      # request's. Only its settings are new: the layers are already in the
+      # registry, so nothing else is uploaded.
+      - name: Release the tested image
+        if: steps.promote.outputs.source != ''
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .github/release
+          platforms: linux/amd64
+          build-args: |
+            IMAGE=${{ steps.promote.outputs.source }}
+            RELEASE_COMMIT=${{ github.sha }}
+            RELEASE_VERSION=${{ steps.version.outputs.version }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+
+      # Everything this run checks passed: remember this code, so a later run
+      # with only docs changes can skip it (see plan).
+      - name: Mark this code as passed
+        env:
+          KEY: ${{ needs.plan.outputs.key }}
+        run: echo "$KEY" > .ci-passed
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ci-passed
+          key: ${{ needs.plan.outputs.key }}
+
+  release:
+    needs: [plan, build]
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && needs.plan.outputs.version != '' &&
+      needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # the tag and the release
+      pull-requests: read # the merged pull requests' commits, for the notes
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the commits since the previous release
+          persist-credentials: false
+
+      # The commits of the pull requests merged since the previous release,
+      # by area (.github/scripts/release-notes.sh), above GitHub's generated
+      # notes, which list only the pull requests. Without them (first
+      # release, or the script failed) the release still goes out.
+      - name: Release notes
+        if: needs.plan.outputs.previous != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREVIOUS: ${{ needs.plan.outputs.previous }}
+        run: |
+          .github/scripts/release-notes.sh "$PREVIOUS" "$GITHUB_SHA" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Tags created with GITHUB_TOKEN don't trigger workflows, so this won't rebuild.
+      - name: Tag and create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: v${{ needs.plan.outputs.version }}
+        run: |
+          notes=()
+          if [ -s "$RUNNER_TEMP/notes.md" ]; then
+            notes=(--notes-file "$RUNNER_TEMP/notes.md")
+          fi
+          gh release create "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --generate-notes "${notes[@]}"
+
+  # Pull requests: one comment with the results and the tables (dependency
+  # review, hadolint, zizmor, smoke test), updated on every run. (Pull
+  # requests from forks get a read-only token: no comment.)
+  # When the code already passed (only the docs changed), the comment keeps
+  # that run's results.
+  report:
+    needs: [plan, test, lint, security, dependencies, build]
+    if: >-
+      !cancelled() && github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork &&
+      needs.plan.outputs.tested != 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write # the comment
+    steps:
+      # The tables: dependency review (dependencies), hadolint (lint), zizmor
+      # (security) and the smoke test (build).
+      # One is missing when its job didn't get that far.
+      - name: Get the scan tables
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: scan-summary-*
+          merge-multiple: true
+
+      - name: Comment on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          TEST: ${{ needs.test.result }}
+          LINT: ${{ needs.lint.result }}
+          SECURITY: ${{ needs.security.result }}
+          DEPENDENCIES: ${{ needs.dependencies.result }}
+          BUILD: ${{ needs.build.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          icon() {
+            case "$1" in
+              success) echo "✅ passed" ;;
+              failure) echo "❌ failed" ;;
+              cancelled) echo "⚪ cancelled" ;;
+              skipped) echo "⏭️ skipped" ;;
+              *) echo "$1" ;;
+            esac
+          }
+          marker="<!-- wirepulse-ci-report -->"
+          {
+            echo "$marker"
+            echo "## CI for ${SHA:0:7}"
+            echo
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| Tests | $(icon "$TEST") |"
+            echo "| Lint: rustfmt, leptosfmt, clippy, typos, actionlint, hadolint, kubeconform | $(icon "$LINT") |"
+            echo "| Security: zizmor | $(icon "$SECURITY") |"
+            echo "| Dependency review | $(icon "$DEPENDENCIES") |"
+            echo "| Image build and smoke test | $(icon "$BUILD") |"
+            echo
+            for scan in dependency-review hadolint zizmor smoke; do
+              if [ -f "$scan-summary.md" ]; then
+                cat "$scan-summary.md"
+                echo
+              fi
+            done
+            echo "[Run details]($RUN_URL) · [Code scanning alerts for this PR]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/security/code-scanning?query=pr%3A$PR+is%3Aopen)"
+          } > comment.md
+
+          # Update the earlier comment if there is one, so the PR keeps one.
+          id=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\"))) | .id" | tail -n 1)
+          if [ -n "$id" ]; then
+            jq -n --rawfile body comment.md '{body: $body}' |
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" --input - > /dev/null
+          else
+            jq -n --rawfile body comment.md '{body: $body}' |
+              gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --input - > /dev/null
+          fi
