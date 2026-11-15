@@ -10,6 +10,7 @@ mod scene;
 mod settings;
 mod util;
 mod ws;
+mod yaml;
 
 fn main() {
     console_error_panic_hook::set_once();

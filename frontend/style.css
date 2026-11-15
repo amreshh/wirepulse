@@ -186,6 +186,11 @@ td { padding: 6px 10px; border-bottom: 1px solid rgba(48,54,61,.6); vertical-ali
   font-family: var(--mono); font-size: 12.5px; line-height: 1.5; background: var(--panel);
   border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; overflow-x: auto; white-space: pre;
 }
+/* GitHub's dark theme colours, like the palette at the top. */
+.yaml .y-key { color: #7ee787; }
+.yaml .y-str { color: #a5d6ff; }
+.yaml .y-lit { color: #79c0ff; }
+.yaml .y-punct, .yaml .y-comment { color: var(--muted); }
 
 /* Config */
 .config-body { overflow-y: auto; display: block; }
