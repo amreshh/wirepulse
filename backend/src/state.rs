@@ -53,6 +53,18 @@ pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
+/// Which build this is, from settings the Dockerfile sets (WIREPULSE_VERSION and
+/// WIREPULSE_COMMIT) rather than compiled in: a new commit then rebuilds nothing, and
+/// CI can release an image it already built and tested by changing only these.
+fn build_env(name: &str) -> String {
+    std::env::var(name).unwrap_or_default()
+}
+
+/// The release version, or the crate's version for builds that aren't a release.
+fn build_version() -> String {
+    Some(build_env("WIREPULSE_VERSION")).filter(|v| !v.is_empty()).unwrap_or_else(|| env!("CARGO_PKG_VERSION").into())
+}
+
 fn encode(msg: &ServerMsg) -> Arc<str> {
     serde_json::to_string(msg).unwrap_or_else(|_| "{}".into()).into()
 }
@@ -61,7 +73,12 @@ impl AppState {
     pub fn new(demo: bool) -> Arc<Self> {
         let (tx, _) = broadcast::channel(64);
         Arc::new(Self {
-            info: Info { version: env!("CARGO_PKG_VERSION").into(), demo, cluster_name: String::new() },
+            info: Info {
+                version: build_version(),
+                commit: build_env("WIREPULSE_COMMIT"),
+                demo,
+                cluster_name: String::new(),
+            },
             status: RwLock::new(Status { demo, ..Default::default() }),
             inventory: RwLock::default(),
             flows: Mutex::default(),

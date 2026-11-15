@@ -286,7 +286,10 @@ pub struct ConfigView {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Info {
+    /// The release (e.g. `1.2.3`), or the crate version for other builds.
     pub version: String,
+    /// The git commit the build came from; empty when not built from CI or the Dockerfile.
+    pub commit: String,
     pub demo: bool,
     pub cluster_name: String,
 }
