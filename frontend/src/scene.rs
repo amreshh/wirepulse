@@ -11,7 +11,7 @@ use crate::settings::{EdgeStyle, LabelMode};
 use crate::util::{fmt_rate, hue, window};
 use common::aggregate::{AggEdge, AggGraph, AggNode, Level};
 use common::layout::{layout, Arrangement, Layout, LayoutStyle, Placed, IDLE_GROUP};
-use common::NodeKind;
+use common::{is_unresolved, NodeKind};
 use leptos::prelude::*;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -793,6 +793,7 @@ impl Scene {
         let _ = c.fill_text(&title, tx, p.y - 2.0);
 
         let mut sub = match (n.kind, self.level()) {
+            (NodeKind::External, _) if is_unresolved(&n.id) => "pod not known".to_string(),
             (NodeKind::External, _) => "outside the cluster".to_string(),
             (_, Level::Namespace) => format!("{} pods", n.members),
             _ if self.input.style.arrangement == Arrangement::Layered => {

@@ -4,18 +4,21 @@
 use crate::app::{use_ctx, Ctx, EpIndex, Tab};
 use crate::filter_bar::FilterBar;
 use crate::flows::{
-    filtered, ColumnsMenu, FlowDetailPanel, FlowFilterControls, FlowFilters, FlowTable, PauseButton, Scope,
+    table_rows, ColumnsMenu, FlowDetailPanel, FlowFilterControls, FlowFilters, FlowTable, KeepSelect, PauseButton,
+    Scope,
 };
 use crate::icons;
 use crate::scene::{self, Scene, SceneInput};
-use crate::settings::{EdgeStyle, LabelMode, ViewSettings, PRESETS};
-use crate::util::{fmt_rate, namespace_of, short_name, window};
+use crate::settings::{EdgeStyle, LabelMode, ViewSettings, DETAILS_WIDTH, PRESETS};
+use crate::util::{fmt_count, fmt_rate, namespace_of, short_name, viewport, window};
+use crate::widgets::{grip, Dropdown, MIN_PANEL};
 use common::aggregate::{aggregate, group_id, AggEdge, AggGraph, Level};
 use common::filter::{EndpointRef, Filter, FlowRef};
 use common::layout::{Arrangement, Container, NodeStyle};
-use common::{Graph, Node, NodeKind, PolicyInfo};
+use common::{is_unresolved, Graph, Node, NodeKind, PolicyInfo};
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -47,7 +50,7 @@ fn filter_graph(g: &Graph, filter: &Filter, ix: &EpIndex) -> Graph {
         return g.clone();
     }
     let by_id: HashMap<&str, &Node> = g.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-    let mut labels: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut labels: HashMap<&str, Cow<[String]>> = HashMap::new();
     for id in
         g.nodes.iter().map(|n| n.id.as_str()).chain(g.edges.iter().flat_map(|e| [e.source.as_str(), e.target.as_str()]))
     {
@@ -133,9 +136,15 @@ pub fn MapTab() -> impl IntoView {
     let hide_idle = RwSignal::new(false);
     let fit = RwSignal::new(0u32);
 
+    // Only what each part reads, so that dragging a panel or a column (which
+    // writes the settings) neither redraws nor refits the map.
+    let filter_map = Memo::new(move |_| ctx.view.with(|v| v.filter_map));
+    let look = Memo::new(move |_| {
+        ctx.view.with(|v| (v.layout, v.edges, v.labels, v.icons, v.animate, v.three_d, v.tower, v.auto_rotate))
+    });
     let agg = Memo::new(move |_| {
         let level = ctx.level.get();
-        if ctx.view.with(|v| v.filter_map) {
+        if filter_map.get() {
             let filter = ctx.parsed.get();
             if !filter.is_empty() {
                 let g = ctx.index.with(|ix| ctx.graph.with(|g| filter_graph(g, &filter, ix)));
@@ -148,7 +157,7 @@ pub fn MapTab() -> impl IntoView {
     // A new filter usually shows a very different part of the map.
     Effect::new(move |prev: Option<()>| {
         ctx.filter.track();
-        ctx.view.with(|v| v.filter_map);
+        filter_map.track();
         if prev.is_some() {
             fit.update(|f| *f += 1);
         }
@@ -157,18 +166,18 @@ pub fn MapTab() -> impl IntoView {
     let canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let slot: SendWrapper<SceneSlot> = SendWrapper::new(Rc::new(RefCell::new(None)));
     Effect::new(move |_| {
-        let v = ctx.view.get();
+        let (layout, edges, labels, icons, animate, three_d, tower, auto_rotate) = look.get();
         let input = SceneInput {
             agg: agg.get(),
             level: Some(ctx.level.get()),
-            style: v.layout,
-            edges: v.edges,
-            labels: v.labels,
-            icons: v.icons,
-            animate: v.animate,
-            three_d: v.three_d,
-            tower: v.tower,
-            auto_rotate: v.auto_rotate,
+            style: layout,
+            edges,
+            labels,
+            icons,
+            animate,
+            three_d,
+            tower,
+            auto_rotate,
             selected: ctx.selected.get(),
             highlight: highlight.get(),
             search: String::new(),
@@ -267,7 +276,7 @@ pub fn MapTab() -> impl IntoView {
                     })
             }}
         </div>
-        <div class="map-area">
+        <div class="map-area" style=move || format!("--details-w: {}px", ctx.view.with(|v| v.details_width))>
             <canvas class="map" node_ref=canvas_ref></canvas>
             <div class="legend">
                 <span>
@@ -363,134 +372,101 @@ fn ViewMenu() -> impl IntoView {
     };
 
     view! {
-        <div class="menu-wrap">
-            <button class="btn" class:active=move || open.get() on:click=move |_| open.update(|o| *o = !*o)>
-                "View ▾"
-            </button>
-            {move || {
-                open.get()
-                    .then(|| {
+        <Dropdown label="View ▾" menu_class="view-menu" width=360.0 open=open>
+            <div class="menu-title">"Presets"</div>
+            <div class="presets">
+                {PRESETS
+                    .iter()
+                    .map(|&(name, layout, edges)| {
                         view! {
-                            <div class="backdrop" on:click=move |_| open.set(false)></div>
-                            <div class="menu view-menu">
-                                <div class="menu-title">"Presets"</div>
-                                <div class="presets">
-                                    {PRESETS
-                                        .iter()
-                                        .map(|&(name, layout, edges)| {
-                                            view! {
-                                                <button
-                                                    class="preset"
-                                                    class:active=move || {
-                                                        ctx.view.with(|v| v.layout == layout && v.edges == edges)
-                                                    }
-                                                    on:click=move |_| {
-                                                        ctx.view
-                                                            .update(|v| {
-                                                                v.layout = layout;
-                                                                v.edges = edges;
-                                                            })
-                                                    }
-                                                >
-                                                    <span class="preview" inner_html=preset_svg(name)></span>
-                                                    {name}
-                                                </button>
-                                            }
+                            <button
+                                class="preset"
+                                class:active=move || { ctx.view.with(|v| v.layout == layout && v.edges == edges) }
+                                on:click=move |_| {
+                                    ctx.view
+                                        .update(|v| {
+                                            v.layout = layout;
+                                            v.edges = edges;
                                         })
-                                        .collect_view()}
-                                </div>
-                                {seg_row(
-                                    ctx,
-                                    "Nodes",
-                                    &[(NodeStyle::Circle, "Circles"), (NodeStyle::Card, "Cards")],
-                                    |v| v.layout.node,
-                                    |v, x| v.layout.node = x,
-                                    never,
-                                )}
-                                {seg_row(
-                                    ctx,
-                                    "Namespaces",
-                                    &[(Container::Circle, "Circles"), (Container::Box, "Boxes")],
-                                    |v| v.layout.effective_container(),
-                                    |v, x| v.layout.container = x,
-                                    cards,
-                                )}
-                                {seg_row(
-                                    ctx,
-                                    "Arrangement",
-                                    &[(Arrangement::Packed, "Packed"), (Arrangement::Layered, "Left → right")],
-                                    |v| v.layout.arrangement,
-                                    |v, x| v.layout.arrangement = x,
-                                    never,
-                                )}
-                                {seg_row(
-                                    ctx,
-                                    "Edges",
-                                    &[
-                                        (EdgeStyle::Curved, "Curved"),
-                                        (EdgeStyle::Straight, "Straight"),
-                                        (EdgeStyle::Orthogonal, "Right-angle"),
-                                    ],
-                                    |v| v.edges,
-                                    |v, x| v.edges = x,
-                                    never,
-                                )}
-                                {seg_row(
-                                    ctx,
-                                    "Labels",
-                                    &[
-                                        (LabelMode::Auto, "Auto"),
-                                        (LabelMode::Always, "Always"),
-                                        (LabelMode::Off, "Off"),
-                                    ],
-                                    |v| v.labels,
-                                    |v, x| v.labels = x,
-                                    never,
-                                )}
-                                <div class="menu-row toggles">
-                                    {toggle("Icons", |v| v.icons, |v, x| v.icons = x)}
-                                    {toggle("Animate traffic", |v| v.animate, |v, x| v.animate = x)}
-                                    {toggle("Filter the map", |v| v.filter_map, |v, x| v.filter_map = x)}
-                                </div>
-                                <div class="menu-title">"3D"</div>
-                                {seg_row(
-                                    ctx,
-                                    "Mode",
-                                    &[(false, "2D"), (true, "3D")],
-                                    |v| v.three_d,
-                                    |v, x| v.three_d = x,
-                                    never,
-                                )}
-                                {seg_row(
-                                    ctx,
-                                    "3D style",
-                                    &[(false, "Map"), (true, "Tower")],
-                                    |v| v.tower,
-                                    |v, x| v.tower = x,
-                                    flat,
-                                )}
-                                <div class="menu-row toggles" class:disabled=move || flat.get()>
-                                    {toggle("Auto-rotate", |v| v.auto_rotate, |v, x| v.auto_rotate = x)}
-                                </div>
-                                <div class="menu-title">"Icons"</div>
-                                <div class="icon-key">
-                                    {icons::LEGEND
-                                        .iter()
-                                        .map(|(k, label)| {
-                                            view! {
-                                                <span>
-                                                    <span class="ico" inner_html=icons::svg(k)></span>
-                                                    {*label}
-                                                </span>
-                                            }
-                                        })
-                                        .collect_view()}
-                                </div>
-                            </div>
+                                }
+                            >
+                                <span class="preview" inner_html=preset_svg(name)></span>
+                                {name}
+                            </button>
                         }
                     })
-            }}
-        </div>
+                    .collect_view()}
+            </div>
+            {seg_row(
+                ctx,
+                "Nodes",
+                &[(NodeStyle::Circle, "Circles"), (NodeStyle::Card, "Cards")],
+                |v| v.layout.node,
+                |v, x| v.layout.node = x,
+                never,
+            )}
+            {seg_row(
+                ctx,
+                "Namespaces",
+                &[(Container::Circle, "Circles"), (Container::Box, "Boxes")],
+                |v| v.layout.effective_container(),
+                |v, x| v.layout.container = x,
+                cards,
+            )}
+            {seg_row(
+                ctx,
+                "Arrangement",
+                &[(Arrangement::Packed, "Packed"), (Arrangement::Layered, "Left → right")],
+                |v| v.layout.arrangement,
+                |v, x| v.layout.arrangement = x,
+                never,
+            )}
+            {seg_row(
+                ctx,
+                "Edges",
+                &[
+                    (EdgeStyle::Curved, "Curved"),
+                    (EdgeStyle::Straight, "Straight"),
+                    (EdgeStyle::Orthogonal, "Right-angle"),
+                ],
+                |v| v.edges,
+                |v, x| v.edges = x,
+                never,
+            )}
+            {seg_row(
+                ctx,
+                "Labels",
+                &[(LabelMode::Auto, "Auto"), (LabelMode::Always, "Always"), (LabelMode::Off, "Off")],
+                |v| v.labels,
+                |v, x| v.labels = x,
+                never,
+            )}
+            <div class="menu-row toggles">
+                {toggle("Icons", |v| v.icons, |v, x| v.icons = x)}
+                {toggle("Animate traffic", |v| v.animate, |v, x| v.animate = x)}
+                {toggle("Filter the map", |v| v.filter_map, |v, x| v.filter_map = x)}
+            </div>
+            <div class="menu-title">"3D"</div>
+            {seg_row(ctx, "Mode", &[(false, "2D"), (true, "3D")], |v| v.three_d, |v, x| v.three_d = x, never)}
+            {seg_row(ctx, "3D style", &[(false, "Map"), (true, "Tower")], |v| v.tower, |v, x| v.tower = x, flat)}
+            <div class="menu-row toggles" class:disabled=move || flat.get()>
+                {toggle("Auto-rotate", |v| v.auto_rotate, |v, x| v.auto_rotate = x)}
+            </div>
+            <div class="menu-title">"Icons"</div>
+            <div class="icon-key">
+                {icons::LEGEND
+                    .iter()
+                    .map(|(k, label)| {
+                        view! {
+                            <span>
+                                <span class="ico" inner_html=icons::svg(k)></span>
+                                {*label}
+                            </span>
+                        }
+                    })
+                    .collect_view()}
+            </div>
+        </Dropdown>
     }
 }
 
@@ -556,6 +532,14 @@ fn Details(agg: Memo<AggGraph>) -> impl IntoView {
         let icon = icons::svg(&node.workload_kind);
 
         Some(view! {
+            {grip(
+                "details-grip",
+                -1.0,
+                MIN_PANEL,
+                || viewport().0 - 120.0,
+                |v| v.details_width,
+                |v, w| v.details_width = w.unwrap_or(DETAILS_WIDTH),
+            )}
             <aside class="details">
                 <div class="details-head">
                     <div class="head-main">
@@ -563,7 +547,9 @@ fn Details(agg: Memo<AggGraph>) -> impl IntoView {
                         <div>
                             <div class="title">{node.label.clone()}</div>
                             <div class="sub">
-                                {if node.kind == NodeKind::External {
+                                {if node.kind == NodeKind::External && is_unresolved(&node.id) {
+                                    "pod not known: Hubble reported only its identity".to_string()
+                                } else if node.kind == NodeKind::External {
                                     "outside the cluster".to_string()
                                 } else if level == Level::Namespace {
                                     "namespace".to_string()
@@ -713,7 +699,7 @@ const PANEL_HEADER: f64 = 40.0;
 fn TrafficPanel(agg: Memo<AggGraph>) -> impl IntoView {
     let ctx = use_ctx();
     let tab = RwSignal::new(PanelTab::Flows);
-    let filters = FlowFilters::new();
+    let filters = FlowFilters::new(PANEL_ROWS);
     // A clicked connection narrows the flows to selected node -> this peer.
     let pair = RwSignal::new(None::<String>);
     Effect::new(move |_| {
@@ -735,16 +721,29 @@ fn TrafficPanel(agg: Memo<AggGraph>) -> impl IntoView {
     let scope = Memo::new(move |_| -> Option<Scope> {
         if let Some(sel) = ctx.selected.get() {
             let label = agg.with(|a| a.node(&sel).map(|n| n.label.clone()))?;
-            let peer = pair.get().map(|p| {
+            let pair = pair.get();
+            let peer = pair.as_ref().map(|p| {
                 let name =
-                    agg.with(|a| a.node(&p).map(|n| n.label.clone())).unwrap_or_else(|| short_name(&p).to_string());
-                (name, members(&p))
+                    agg.with(|a| a.node(p).map(|n| n.label.clone())).unwrap_or_else(|| short_name(p).to_string());
+                (name, members(p))
             });
-            return Some(Scope { label, ids: members(&sel), peer });
+            let key = format!("{}|{sel}|{}", ctx.level.get().as_str(), pair.unwrap_or_default());
+            return Some(Scope { key, label, ids: members(&sel), peer });
         }
-        policy_pods(ctx).map(|(key, pods)| Scope { label: format!("policy {key}"), ids: pods, peer: None })
+        policy_pods(ctx).map(|(key, pods)| Scope {
+            key: format!("policy|{key}"),
+            label: format!("policy {key}"),
+            ids: pods,
+            peer: None,
+        })
     });
-    let rows = Memo::new(move |_| scope.with(|s| filtered(ctx, filters, s.as_ref(), PANEL_ROWS)));
+    // The store keeps the selection's flows apart, so the rest of the
+    // cluster doesn't push them out.
+    Effect::new(move |_| {
+        let scope = scope.get();
+        ctx.index.with_untracked(|ix| ctx.store.update(|s| s.set_scope(scope, ix)));
+    });
+    let rows = Memo::new(move |_| ctx.store.with(|s| table_rows(s.scoped(), filters)));
     let highlight = Memo::new(move |_| highlight_ids(ctx));
     let connections = Memo::new(move |_| {
         let sel = ctx.selected.get();
@@ -780,7 +779,7 @@ fn TrafficPanel(agg: Memo<AggGraph>) -> impl IntoView {
     };
     let toggle = move || ctx.view.update(|v| v.drawer_open = !v.drawer_open);
 
-    let tab_btn = move |t: PanelTab, label: &'static str, count: Signal<usize>| {
+    let tab_btn = move |t: PanelTab, label: &'static str, count: Signal<String>| {
         view! {
             <button
                 class="ptab"
@@ -797,8 +796,8 @@ fn TrafficPanel(agg: Memo<AggGraph>) -> impl IntoView {
             </button>
         }
     };
-    let flow_count = Signal::derive(move || rows.with(Vec::len));
-    let conn_count = Signal::derive(move || connections.with(Vec::len));
+    let flow_count = Signal::derive(move || rows.with(|r| fmt_count(r.total)));
+    let conn_count = Signal::derive(move || connections.with(|c| fmt_count(c.len())));
 
     view! {
         <section class="panel" style:height=move || format!("{}px", height())>
@@ -857,6 +856,7 @@ fn TrafficPanel(agg: Memo<AggGraph>) -> impl IntoView {
                                 view! {
                                     <FlowFilterControls filters=filters />
                                     <ColumnsMenu />
+                                    <KeepSelect />
                                     <PauseButton />
                                 }
                             })
@@ -869,7 +869,7 @@ fn TrafficPanel(agg: Memo<AggGraph>) -> impl IntoView {
                 {move || match tab.get() {
                     PanelTab::Flows => {
                         view! {
-                            <div class="flows-split" class:has-open=move || filters.open.get().is_some()>
+                            <div class="flows-split" class:has-open=move || filters.open.with(Option::is_some)>
                                 <div class="table-wrap">
                                     <FlowTable rows=rows filters=filters />
                                 </div>

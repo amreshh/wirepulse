@@ -268,6 +268,14 @@ fn l7_detail(l7: &str, rng: &mut Rng) -> Option<L7Detail> {
 fn event(cluster: &Cluster, rng: &mut Rng, pat: &Pattern, dns_query: &str) -> Vec<FlowDetail> {
     let mut src = cluster.endpoint(pat.src, rng);
     let mut dst = cluster.endpoint(pat.dst, rng);
+    // Now and then Hubble knows only the identity of the far side (the agent
+    // that saw the flow had no pod for its IP), as `hubble::endpoint_id`
+    // writes it; the server names the pod again.
+    if !dst.pod.is_empty() && rng.f() < 0.05 {
+        dst.id = format!("{}/identity:{}", dst.namespace, dst.identity);
+        dst.pod.clear();
+        dst.workload.clear();
+    }
     src.port = 32768 + (rng.next() % 28000) as u32;
     dst.port = pat.port;
     if !pat.dns.is_empty() {

@@ -4,6 +4,13 @@ use serde::{Deserialize, Serialize};
 /// (world, host, remote-node, kube-apiserver, ...).
 pub const EXTERNAL_GROUP: &str = "(external)";
 
+/// An endpoint Hubble reported without a pod, which the server couldn't name
+/// either: `identity:N`, `<namespace>/identity:N` (in a known namespace), or
+/// `unknown` when the flow had no endpoint at all.
+pub fn is_unresolved(id: &str) -> bool {
+    id == "unknown" || id.rsplit('/').next().is_some_and(|p| p.starts_with("identity:"))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NodeKind {
     Pod,
@@ -200,6 +207,11 @@ pub struct Status {
     pub k8s_connected: bool,
     #[serde(default)]
     pub message: String,
+    /// Changes every time the server starts (0 from servers that predate
+    /// it). Flow ids count up from 1 in every run, so a page that sees a new
+    /// instance starts its tables over instead of mixing up two runs' ids.
+    #[serde(default)]
+    pub instance: u64,
 }
 
 /// Everything the backend pushes over the WebSocket.
@@ -292,6 +304,10 @@ pub struct Info {
     pub commit: String,
     pub demo: bool,
     pub cluster_name: String,
+    /// Flows the server keeps in full (`--flow-history`): how far back the
+    /// flow details panel, and a newly opened page, can reach.
+    #[serde(default)]
+    pub flow_history: u32,
 }
 
 /// Groups cilium-config keys so the config view can be scanned quickly.
@@ -375,4 +391,18 @@ pub struct EndpointsView {
     /// Labels for pods without a Cilium endpoint (e.g. host-network pods),
     /// so label filters still work for them.
     pub pod_labels: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_endpoints() {
+        assert!(is_unresolved("identity:65478"));
+        assert!(is_unresolved("flux-system/identity:65478"));
+        assert!(is_unresolved("unknown"));
+        assert!(!is_unresolved("flux-system/helm-controller-5d8f-x2k4q"));
+        assert!(!is_unresolved("reserved:world"));
+    }
 }

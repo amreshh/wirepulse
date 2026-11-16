@@ -1,8 +1,10 @@
 //! View preferences, remembered per browser.
 
+use crate::store::{DEFAULT_KEEP, KEEP_CHOICES};
 use crate::util::window;
 use common::layout::{Arrangement, Container, LayoutStyle, NodeStyle};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
 
 const KEY: &str = "wirepulse.view.v1";
 /// Key used before the project was renamed; read once so saved
@@ -26,7 +28,7 @@ pub enum LabelMode {
 }
 
 /// Columns of the flows table that can be shown or hidden.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Col {
     Time,
     Source,
@@ -66,7 +68,8 @@ impl Col {
         Col::Node,
     ];
 
-    /// Fixed width in CSS pixels (the table uses `table-layout: fixed`).
+    /// Default width in CSS pixels (the table uses `table-layout: fixed`);
+    /// see `ViewSettings::col_width`.
     pub fn width(self) -> u32 {
         match self {
             Col::Time => 118,
@@ -130,6 +133,42 @@ pub struct ViewSettings {
     /// Drawer height in CSS pixels.
     pub drawer_height: f64,
     pub columns: Vec<Col>,
+    /// Column widths dragged to another size; the rest use `Col::width`.
+    #[serde(deserialize_with = "known_columns")]
+    pub col_widths: BTreeMap<Col, u32>,
+    /// Flows each table keeps (see `store`).
+    pub keep_flows: usize,
+    /// Width of the details panel beside the flows and endpoints tables.
+    pub side_width: f64,
+    /// Width of the map's details panel.
+    pub details_width: f64,
+}
+
+pub const SIDE_WIDTH: f64 = 380.0;
+pub const DETAILS_WIDTH: f64 = 340.0;
+
+impl ViewSettings {
+    pub fn col_width(&self, c: Col) -> u32 {
+        self.col_widths.get(&c).copied().unwrap_or_else(|| c.width())
+    }
+
+    /// `None` goes back to the default width.
+    pub fn set_col_width(&mut self, c: Col, width: Option<f64>) {
+        match width {
+            Some(w) => self.col_widths.insert(c, w as u32),
+            None => self.col_widths.remove(&c),
+        };
+    }
+}
+
+/// Column widths as saved. Columns this version doesn't know are skipped:
+/// failing would reset every setting.
+fn known_columns<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<Col, u32>, D::Error> {
+    let saved = BTreeMap::<String, u32>::deserialize(d)?;
+    Ok(saved
+        .into_iter()
+        .filter_map(|(k, w)| serde_json::from_value::<Col>(serde_json::Value::String(k)).ok().map(|c| (c, w)))
+        .collect())
 }
 
 impl Default for ViewSettings {
@@ -158,6 +197,10 @@ impl Default for ViewSettings {
                 Col::Verdict,
                 Col::Policy,
             ],
+            col_widths: BTreeMap::new(),
+            keep_flows: DEFAULT_KEEP,
+            side_width: SIDE_WIDTH,
+            details_width: DETAILS_WIDTH,
         }
     }
 }
@@ -194,11 +237,15 @@ fn storage() -> Option<web_sys::Storage> {
 
 pub fn load() -> ViewSettings {
     let s = storage();
-    s.as_ref()
+    let mut v: ViewSettings = s
+        .as_ref()
         .and_then(|s| s.get_item(KEY).ok().flatten())
         .or_else(|| s.as_ref().and_then(|s| s.get_item(OLD_KEY).ok().flatten()))
         .and_then(|j| serde_json::from_str(&j).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // The nearest choice the menu offers.
+    v.keep_flows = KEEP_CHOICES.into_iter().min_by_key(|c| c.abs_diff(v.keep_flows)).unwrap_or(DEFAULT_KEEP);
+    v
 }
 
 pub fn save(v: &ViewSettings) {
