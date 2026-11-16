@@ -2,6 +2,7 @@
 //! syntax help. Edits `Ctx::filter`, which every view reads.
 
 use crate::app::{use_ctx, Ctx};
+use crate::widgets::Dropdown;
 use common::filter::{Filter, Kind, Side, KINDS};
 use leptos::prelude::*;
 use std::collections::BTreeSet;
@@ -48,7 +49,7 @@ fn candidates(ctx: Ctx, kind: &str) -> BTreeSet<String> {
             .graph
             .with(|g| out.extend(g.nodes.iter().map(|n| n.workload.rsplit('/').next().unwrap_or("").to_string()))),
         "dns" | "fqdn" => {
-            ctx.flows.with(|f| out.extend(f.iter().filter(|e| !e.dst_dns.is_empty()).map(|e| e.dst_dns.clone())))
+            ctx.store.with(|s| out.extend(s.all().iter().filter(|e| !e.dst_dns.is_empty()).map(|e| e.dst_dns.clone())))
         }
         "identity" | "id" => ctx.index.with(|ix| out.extend(ix.identity.values().map(|i| i.to_string()))),
         "ip" => ctx.graph.with(|g| out.extend(g.nodes.iter().filter(|n| !n.ip.is_empty()).map(|n| n.ip.clone()))),
@@ -65,7 +66,7 @@ fn candidates(ctx: Ctx, kind: &str) -> BTreeSet<String> {
         "verdict" => {
             out.extend(["forwarded", "dropped", "audit", "redirected", "error", "translated"].map(String::from))
         }
-        "node" => ctx.flows.with(|f| out.extend(f.iter().filter(|e| !e.node.is_empty()).map(|e| e.node.clone()))),
+        "node" => ctx.store.with(|s| out.extend(s.all().iter().filter(|e| !e.node.is_empty()).map(|e| e.node.clone()))),
         "policy" => ctx.policies.with(|p| {
             out.extend(p.iter().map(|p| match &p.namespace {
                 Some(ns) => format!("{ns}/{}", p.name),
@@ -330,144 +331,130 @@ pub fn FilterBar() -> impl IntoView {
                         }
                     })
             }}
-            <div class="menu-wrap">
-                <button
-                    class="btn icon-btn"
-                    title="Filter syntax"
-                    class:active=move || help.get()
-                    on:click=move |_| help.update(|h| *h = !*h)
-                >
-                    "?"
-                </button>
-                {move || {
-                    help.get()
-                        .then(|| {
-                            view! {
-                                <div class="backdrop" on:click=move |_| help.set(false)></div>
-                                <div class="menu help-menu">
-                                    <div class="menu-title">"Filter syntax"</div>
-                                    <table class="syntax">
-                                        <tr>
-                                            <td>
-                                                <code>"label=app=web"</code>
-                                            </td>
-                                            <td>
-                                                "label value; "<code>"label=app"</code>" = key exists; "
-                                                <code>"k8s:"</code>" optional"
-                                            </td>
-                                        </tr>
-                                        <tr>
-                                            <td>
-                                                <code>"pod=web"</code>
-                                                " "
-                                                <code>"ns=shop"</code>
-                                            </td>
-                                            <td>"pod name prefix ("<code>"pod=ns/name"</code>" too), namespace"</td>
-                                        </tr>
-                                        <tr>
-                                            <td>
-                                                <code>"workload=web"</code>
-                                            </td>
-                                            <td>"Deployment, StatefulSet, … name"</td>
-                                        </tr>
-                                        <tr>
-                                            <td>
-                                                <code>"ip=10.0.0.0/8"</code>
-                                            </td>
-                                            <td>"address or CIDR"</td>
-                                        </tr>
-                                        <tr>
-                                            <td>
-                                                <code>"dns=*.stripe.com"</code>
-                                            </td>
-                                            <td>"DNS name, "<code>"*"</code>" wildcards"</td>
-                                        </tr>
-                                        <tr>
-                                            <td>
-                                                <code>"identity=12345"</code>
-                                            </td>
-                                            <td>"Cilium security identity"</td>
-                                        </tr>
-                                        <tr>
-                                            <td>
-                                                <code>"port=5432"</code>
-                                                " "
-                                                <code>"protocol=udp"</code>
-                                            </td>
-                                            <td>"destination port, protocol"</td>
-                                        </tr>
-                                        <tr>
-                                            <td>
-                                                <code>"verdict=dropped"</code>
-                                            </td>
-                                            <td>"forwarded, dropped, audit, …"</td>
-                                        </tr>
-                                        <tr>
-                                            <td>
-                                                <code>"node=worker-1"</code>
-                                                " "
-                                                <code>"policy=lockdown"</code>
-                                            </td>
-                                            <td>"Kubernetes node, allowing/denying policy"</td>
-                                        </tr>
-                                        <tr>
-                                            <td>
-                                                <code>"from:…"</code>
-                                                " "
-                                                <code>"to:…"</code>
-                                            </td>
-                                            <td>"only the source / destination side"</td>
-                                        </tr>
-                                        <tr>
-                                            <td>
-                                                <code>"!…"</code>
-                                            </td>
-                                            <td>"exclude"</td>
-                                        </tr>
-                                        <tr>
-                                            <td>
-                                                <code>"word"</code>
-                                            </td>
-                                            <td>"search names, IPs, DNS names, HTTP paths"</td>
-                                        </tr>
-                                    </table>
-                                    <p class="muted small">
-                                        "Several terms of the same kind match any of them; different kinds must all match."
-                                    </p>
-                                    <div class="menu-title">"Examples"</div>
-                                    {EXAMPLES
-                                        .iter()
-                                        .map(|(f, what)| {
-                                            view! {
-                                                <div
-                                                    class="example"
-                                                    on:click=move |_| {
-                                                        ctx.filter.set(f.to_string());
-                                                        help.set(false);
-                                                    }
-                                                >
-                                                    <code>{*f}</code>
-                                                    <span class="muted">{*what}</span>
-                                                </div>
-                                            }
-                                        })
-                                        .collect_view()}
-                                    <label class="chk">
-                                        <input
-                                            type="checkbox"
-                                            prop:checked=move || ctx.view.with(|v| v.filter_map)
-                                            on:change=move |ev| {
-                                                let on = event_target_checked(&ev);
-                                                ctx.view.update(|v| v.filter_map = on);
-                                            }
-                                        />
-                                        "Also filter the map"
-                                    </label>
-                                </div>
-                            }
-                        })
-                }}
-            </div>
+            <Dropdown
+                label="?"
+                button_class="btn icon-btn"
+                title="Filter syntax"
+                menu_class="help-menu"
+                width=470.0
+                open=help
+            >
+                <div class="menu-title">"Filter syntax"</div>
+                <table class="syntax">
+                    <tr>
+                        <td>
+                            <code>"label=app=web"</code>
+                        </td>
+                        <td>"label value; "<code>"label=app"</code>" = key exists; " <code>"k8s:"</code>" optional"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"pod=web"</code>
+                            " "
+                            <code>"ns=shop"</code>
+                        </td>
+                        <td>"pod name prefix ("<code>"pod=ns/name"</code>" too), namespace"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"workload=web"</code>
+                        </td>
+                        <td>"Deployment, StatefulSet, … name"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"ip=10.0.0.0/8"</code>
+                        </td>
+                        <td>"address or CIDR"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"dns=*.stripe.com"</code>
+                        </td>
+                        <td>"DNS name, "<code>"*"</code>" wildcards"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"identity=12345"</code>
+                        </td>
+                        <td>"Cilium security identity"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"port=5432"</code>
+                            " "
+                            <code>"protocol=udp"</code>
+                        </td>
+                        <td>"destination port, protocol"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"verdict=dropped"</code>
+                        </td>
+                        <td>"forwarded, dropped, audit, …"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"node=worker-1"</code>
+                            " "
+                            <code>"policy=lockdown"</code>
+                        </td>
+                        <td>"Kubernetes node, allowing/denying policy"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"from:…"</code>
+                            " "
+                            <code>"to:…"</code>
+                        </td>
+                        <td>"only the source / destination side"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"!…"</code>
+                        </td>
+                        <td>"exclude"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"word"</code>
+                        </td>
+                        <td>"search names, IPs, DNS names, HTTP paths"</td>
+                    </tr>
+                </table>
+                <p class="muted small">
+                    "Several terms of the same kind match any of them; different kinds must all match."
+                </p>
+                <div class="menu-title">"Examples"</div>
+                {EXAMPLES
+                    .iter()
+                    .map(|(f, what)| {
+                        view! {
+                            <div
+                                class="example"
+                                on:click=move |_| {
+                                    ctx.filter.set(f.to_string());
+                                    help.set(false);
+                                }
+                            >
+                                <code>{*f}</code>
+                                <span class="muted">{*what}</span>
+                            </div>
+                        }
+                    })
+                    .collect_view()}
+                <label class="chk">
+                    <input
+                        type="checkbox"
+                        prop:checked=move || ctx.view.with(|v| v.filter_map)
+                        on:change=move |ev| {
+                            let on = event_target_checked(&ev);
+                            ctx.view.update(|v| v.filter_map = on);
+                        }
+                    />
+                    "Also filter the map"
+                </label>
+            </Dropdown>
         </div>
     }
 }

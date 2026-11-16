@@ -56,6 +56,17 @@ struct Args {
     /// Serve a synthetic cluster instead of connecting to Kubernetes/Hubble.
     #[arg(long, env = "WIREPULSE_DEMO")]
     demo: bool,
+
+    /// Flows the server keeps in full: how far back the flow details panel
+    /// reaches, and how many flows a page can start with. Each takes a few
+    /// KB (most of it the endpoints' labels).
+    #[arg(
+        long,
+        env = "WIREPULSE_FLOW_HISTORY",
+        default_value_t = state::DEFAULT_FLOW_HISTORY,
+        value_parser = clap::value_parser!(u32).range(100..=1_000_000)
+    )]
+    flow_history: u32,
 }
 
 #[tokio::main]
@@ -67,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let args = Args::parse();
-    let state = state::AppState::new(args.demo);
+    let state = state::AppState::new(args.demo, args.flow_history);
 
     if args.demo {
         info!("demo mode: serving a synthetic cluster");

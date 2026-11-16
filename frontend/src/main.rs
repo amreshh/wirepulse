@@ -8,7 +8,9 @@ mod map;
 mod policies;
 mod scene;
 mod settings;
+mod store;
 mod util;
+mod widgets;
 mod ws;
 mod yaml;
 

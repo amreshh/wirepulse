@@ -6,7 +6,7 @@
 //! again every few seconds. The view is rebuilt from that cache.
 
 use crate::state::{AppState, Inventory};
-use common::{EndpointInfo, EndpointsView};
+use common::{is_unresolved, EndpointDetail, EndpointInfo, EndpointsView};
 use futures::{FutureExt, StreamExt};
 use kube::api::{ApiResource, DynamicObject, GroupVersionKind, ListParams, TypeMeta};
 use kube::runtime::reflector::{self, Store};
@@ -14,6 +14,7 @@ use kube::runtime::{watcher, WatchStreamExt};
 use kube::{Api, Client};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -184,8 +185,73 @@ pub fn store(state: &AppState, source: &str, parsed: Vec<(EndpointInfo, Endpoint
         endpoints.push(e);
     }
     let view = build_view(source, endpoints, &state.inventory.read().unwrap());
+    *state.endpoint_index.write().unwrap() = EndpointIndex::new(&view.endpoints);
     *state.endpoints.write().unwrap() = view;
     *state.endpoint_objects.write().unwrap() = objects;
+}
+
+/// The Cilium endpoints by IP and by identity, to name the pod behind a flow
+/// that Hubble sent without one.
+#[derive(Default)]
+pub struct EndpointIndex {
+    /// IP -> (pod id, identity, workload).
+    by_ip: HashMap<IpAddr, (String, u64, String)>,
+    /// Identity -> (namespace, workload) of an endpoint that has it. Pods
+    /// with the same labels share an identity, and so a workload.
+    by_identity: HashMap<u64, (String, String)>,
+}
+
+impl EndpointIndex {
+    pub fn new(endpoints: &[EndpointInfo]) -> Self {
+        let mut ix = Self::default();
+        for e in endpoints {
+            for ip in [&e.ipv4, &e.ipv6] {
+                if let Ok(ip) = ip.parse::<IpAddr>() {
+                    ix.by_ip.insert(ip, (e.id.clone(), e.identity, e.workload.clone()));
+                }
+            }
+            if e.identity != 0 {
+                ix.by_identity.entry(e.identity).or_insert_with(|| (e.namespace.clone(), e.workload.clone()));
+            }
+        }
+        ix
+    }
+
+    /// Names the pod behind `ep` if Hubble left it out: the endpoint with its
+    /// IP, as long as the identity agrees (an IP can move to another pod).
+    /// Otherwise it fills in the namespace and workload of an endpoint with
+    /// the same identity. Returns whether `ep` changed.
+    pub fn resolve(&self, ep: &mut EndpointDetail) -> bool {
+        if !is_unresolved(&ep.id) {
+            return false;
+        }
+        let same_identity = |identity: u64| ep.identity == 0 || u64::from(ep.identity) == identity;
+        let by_ip = ep.ip.parse::<IpAddr>().ok().and_then(|ip| self.by_ip.get(&ip));
+        if let Some((id, identity, workload)) = by_ip.filter(|(_, identity, _)| same_identity(*identity)) {
+            let (ns, pod) = id.split_once('/').unwrap_or_default();
+            ep.namespace = ns.to_string();
+            ep.pod = pod.to_string();
+            ep.id = id.clone();
+            if ep.workload.is_empty() {
+                ep.workload = workload.clone();
+            }
+            if ep.identity == 0 {
+                ep.identity = u32::try_from(*identity).unwrap_or_default();
+            }
+            return true;
+        }
+        let Some((ns, workload)) = self.by_identity.get(&u64::from(ep.identity)).filter(|_| ep.identity != 0) else {
+            return false;
+        };
+        if ep.namespace.is_empty() {
+            ep.namespace = ns.clone();
+        }
+        if ep.workload.is_empty() {
+            ep.workload = workload.clone();
+        }
+        ep.id = format!("{}/identity:{}", ep.namespace, ep.identity);
+        true
+    }
 }
 
 pub fn build_view(source: &str, mut endpoints: Vec<EndpointInfo>, inv: &Inventory) -> EndpointsView {
@@ -314,6 +380,49 @@ mod tests {
 
     fn object(v: Value) -> DynamicObject {
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn resolves_endpoints_hubble_sent_without_a_pod() {
+        let web = |ip: &str| EndpointInfo {
+            id: "shop/web-1".into(),
+            namespace: "shop".into(),
+            identity: 56789,
+            ipv4: ip.into(),
+            ipv6: "fd00::5".into(),
+            workload: "Deployment/web".into(),
+            ..Default::default()
+        };
+        let ix = EndpointIndex::new(&[web("10.0.1.5")]);
+        let ep = |id: &str, ip: &str, identity: u32| EndpointDetail {
+            id: id.into(),
+            ip: ip.into(),
+            identity,
+            ..Default::default()
+        };
+
+        let mut e = ep("shop/identity:56789", "10.0.1.5", 56789);
+        assert!(ix.resolve(&mut e));
+        assert_eq!((e.id.as_str(), e.pod.as_str(), e.workload.as_str()), ("shop/web-1", "web-1", "Deployment/web"));
+        // IPv6, written another way.
+        let mut e = ep("identity:56789", "fd00:0:0::5", 56789);
+        assert!(ix.resolve(&mut e));
+        assert_eq!((e.id.as_str(), e.namespace.as_str()), ("shop/web-1", "shop"));
+        // No endpoint at all: the IP alone, and the identity comes with it.
+        let mut e = ep("unknown", "10.0.1.5", 0);
+        assert!(ix.resolve(&mut e));
+        assert_eq!((e.id.as_str(), e.identity), ("shop/web-1", 56789));
+        // The IP now belongs to a pod with another identity: not that pod,
+        // but the namespace and workload of the identity.
+        let mut e = ep("identity:11111", "10.0.1.5", 11111);
+        assert!(!ix.resolve(&mut e));
+        let mut e = ep("identity:56789", "10.0.9.9", 56789);
+        assert!(ix.resolve(&mut e));
+        assert_eq!((e.id.as_str(), e.workload.as_str()), ("shop/identity:56789", "Deployment/web"));
+        // Endpoints Hubble named are left alone.
+        let mut e = ep("shop/web-2", "10.0.1.5", 56789);
+        assert!(!ix.resolve(&mut e));
+        assert_eq!(e.id, "shop/web-2");
     }
 
     #[test]

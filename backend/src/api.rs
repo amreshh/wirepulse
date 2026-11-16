@@ -1,15 +1,16 @@
 //! HTTP API, WebSocket push and static file serving.
 
 use crate::hosts::{strip_port, AllowedHosts};
-use crate::state::AppState;
+use crate::state::{AppState, DEFAULT_SNAPSHOT};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Request, State};
+use axum::extract::{Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderName, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Json, Router};
 use common::{ConfigView, EndpointsView, FlowDetail, FlowEvent, Graph, Info, PolicyInfo};
+use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
@@ -86,8 +87,17 @@ async fn graph(State(s): State<Arc<AppState>>) -> Json<Graph> {
     Json(s.build_graph())
 }
 
-async fn flows(State(s): State<Arc<AppState>>) -> Json<Vec<FlowEvent>> {
-    Json(s.recent_flows())
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct FlowsParams {
+    /// How many of the newest flows (at most what the server keeps).
+    limit: Option<usize>,
+}
+
+/// The newest flows, oldest first. The UI fetches more of them when its
+/// "Keep" setting goes up.
+async fn flows(State(s): State<Arc<AppState>>, Query(p): Query<FlowsParams>) -> Json<Vec<FlowEvent>> {
+    Json(s.recent_flows(p.limit.unwrap_or(DEFAULT_SNAPSHOT), None))
 }
 
 async fn flow_detail(
@@ -123,9 +133,22 @@ async fn config(State(s): State<Arc<AppState>>) -> Json<ConfigView> {
 /// the server buffer small.
 const MAX_CLIENT_MESSAGE: usize = 64 * 1024;
 
+/// What a page asks for when it opens the WebSocket.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct WsParams {
+    /// How many recent flows to start with (at most what the server keeps).
+    flows: Option<usize>,
+    /// The server run the page's flows came from, and the newest flow id it
+    /// has: a page that reconnects to the same run gets only what it missed.
+    instance: Option<u64>,
+    after: Option<u64>,
+}
+
 async fn ws(
     ws: WebSocketUpgrade,
     headers: HeaderMap,
+    Query(p): Query<WsParams>,
     Extension(hosts): Extension<Arc<AllowedHosts>>,
     State(s): State<Arc<AppState>>,
 ) -> Response {
@@ -137,9 +160,13 @@ async fn ws(
         );
         return StatusCode::FORBIDDEN.into_response();
     }
+    let limit = p.flows.unwrap_or(DEFAULT_SNAPSHOT);
+    // Ids start over in every run, so `after` only means something to the
+    // run that handed it out.
+    let after = p.after.filter(|_| p.instance == Some(s.instance));
     ws.max_message_size(MAX_CLIENT_MESSAGE)
         .max_frame_size(MAX_CLIENT_MESSAGE)
-        .on_upgrade(move |socket| client(socket, s))
+        .on_upgrade(move |socket| client(socket, s, limit, after))
         .into_response()
 }
 
@@ -173,11 +200,12 @@ fn same_origin(headers: &HeaderMap, hosts: &AllowedHosts) -> bool {
         || hosts.lists(strip_port(&origin_host))
 }
 
-async fn client(mut socket: WebSocket, state: Arc<AppState>) {
+async fn client(mut socket: WebSocket, state: Arc<AppState>, limit: usize, after: Option<u64>) {
     // Subscribe first so nothing is missed between the snapshot and the
-    // stream. A flow can then arrive twice; the UI drops repeats by id.
+    // stream. A flow can then arrive twice; the UI drops repeats by id. The
+    // status goes first: it tells the page which run the ids belong to.
     let mut rx = state.tx.subscribe();
-    for msg in [state.status_msg(), state.latest_graph_msg(), state.recent_flows_msg()] {
+    for msg in [state.status_msg(), state.latest_graph_msg(), state.snapshot_msg(limit, after)] {
         if socket.send(Message::Text(msg.as_ref().into())).await.is_err() {
             return;
         }

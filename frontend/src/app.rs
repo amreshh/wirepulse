@@ -6,6 +6,7 @@ use crate::flows::FlowsTab;
 use crate::map::MapTab;
 use crate::policies::PoliciesTab;
 use crate::settings::{self, ViewSettings};
+use crate::store::FlowStore;
 use crate::util::{get_json, set_interval};
 use crate::ws;
 use common::aggregate::Level;
@@ -13,10 +14,8 @@ use common::filter::Filter;
 use common::{ConfigView, EndpointsView, FlowEvent, Graph, Info, PolicyInfo, Status};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use std::collections::{HashMap, VecDeque};
-
-/// Flows kept in the browser for the table.
-pub const MAX_FLOWS: usize = 1000;
+use std::borrow::Cow;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -36,11 +35,12 @@ pub struct EpIndex {
 
 impl EpIndex {
     /// Labels for an id; reserved entities get their `reserved:` label.
-    pub fn labels_for(&self, id: &str) -> Vec<String> {
+    /// Borrowed when known: filters ask for every flow they check.
+    pub fn labels_for(&self, id: &str) -> Cow<'_, [String]> {
         if let Some(l) = self.labels.get(id) {
-            return l.clone();
+            return Cow::Borrowed(l);
         }
-        id.strip_prefix("reserved:").map(|e| vec![format!("reserved:{e}")]).unwrap_or_default()
+        Cow::Owned(id.strip_prefix("reserved:").map(|e| vec![format!("reserved:{e}")]).unwrap_or_default())
     }
 }
 
@@ -49,7 +49,8 @@ impl EpIndex {
 #[derive(Clone, Copy)]
 pub struct Ctx {
     pub graph: RwSignal<Graph>,
-    pub flows: RwSignal<VecDeque<FlowEvent>>,
+    /// Flows kept in the browser (see `store`).
+    pub store: RwSignal<FlowStore>,
     pub status: RwSignal<Status>,
     pub connected: RwSignal<bool>,
     pub policies: RwSignal<Vec<PolicyInfo>>,
@@ -115,6 +116,20 @@ pub fn load_policies(ctx: Ctx) {
     });
 }
 
+/// Fetches the newest `n` flows the server has, for pools that just grew.
+fn backfill(ctx: Ctx, n: usize) {
+    spawn_local(async move {
+        match get_json::<Vec<FlowEvent>>(&format!("/api/flows?limit={n}")).await {
+            // Paused tables stay as they are.
+            Ok(flows) if !ctx.paused.get_untracked() => {
+                ctx.index.with_untracked(|ix| ctx.store.update(|s| s.backfill(flows, ix)));
+            }
+            Ok(_) => {}
+            Err(e) => leptos::logging::warn!("{e}"),
+        }
+    });
+}
+
 pub fn load_config(ctx: Ctx) {
     spawn_local(async move {
         match get_json::<ConfigView>("/api/config").await {
@@ -135,6 +150,11 @@ pub fn App() -> impl IntoView {
             for e in &v.endpoints {
                 ix.labels.insert(e.id.clone(), e.labels.clone());
                 ix.identity.insert(e.id.clone(), e.identity as u32);
+                // Flows without the pod name it by namespace and identity;
+                // pods with one identity share its labels.
+                let by_identity = format!("{}/identity:{}", e.namespace, e.identity);
+                ix.identity.entry(by_identity.clone()).or_insert(e.identity as u32);
+                ix.labels.entry(by_identity).or_insert_with(|| e.labels.clone());
             }
             for (id, l) in &v.pod_labels {
                 ix.labels.insert(id.clone(), l.clone());
@@ -142,9 +162,11 @@ pub fn App() -> impl IntoView {
             ix
         })
     });
+    let view = RwSignal::new(settings::load());
+    let keep = Memo::new(move |_| view.with(|v| v.keep_flows));
     let ctx = Ctx {
         graph: RwSignal::new(Graph::default()),
-        flows: RwSignal::new(VecDeque::with_capacity(MAX_FLOWS)),
+        store: RwSignal::new(FlowStore::new(keep.get_untracked())),
         status: RwSignal::new(Status::default()),
         connected: RwSignal::new(false),
         policies: RwSignal::new(Vec::new()),
@@ -159,10 +181,27 @@ pub fn App() -> impl IntoView {
         endpoints,
         index,
         paused: RwSignal::new(false),
-        view: RwSignal::new(settings::load()),
+        view,
     };
     provide_context(ctx);
     Effect::new(move |_| ctx.view.with(settings::save));
+    // The filter decides what the matching pool keeps, and new labels can
+    // make more of the kept flows match.
+    Effect::new(move |_| {
+        let filter = ctx.parsed.get();
+        ctx.index.with(|ix| ctx.store.update(|s| s.set_filter(filter, ix)));
+    });
+    // A higher "Keep" also fetches the older flows the server still has.
+    Effect::new(move |prev: Option<usize>| {
+        let n = keep.get();
+        if prev.is_some_and(|p| p != n) {
+            ctx.store.update(|s| s.set_limit(n));
+            if prev.is_some_and(|p| n > p) && !ctx.paused.get_untracked() {
+                backfill(ctx, n);
+            }
+        }
+        n
+    });
 
     ws::connect(ctx);
     load_policies(ctx);

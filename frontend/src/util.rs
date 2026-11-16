@@ -59,6 +59,35 @@ pub fn fmt_rate(r: f32) -> String {
     }
 }
 
+/// `12345` -> `12,345`.
+pub fn fmt_count(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `5000` -> `5k`, `2500` -> `2.5k`, `800` -> `800`.
+pub fn fmt_thousands(n: usize) -> String {
+    match n {
+        n if n < 1000 => n.to_string(),
+        n if n.is_multiple_of(1000) => format!("{}k", n / 1000),
+        n => format!("{:.1}k", n as f64 / 1000.0),
+    }
+}
+
+/// Size of the browser window in CSS pixels.
+pub fn viewport() -> (f64, f64) {
+    let w = window();
+    let size = |v: Result<wasm_bindgen::JsValue, _>| v.ok().and_then(|v| v.as_f64());
+    (size(w.inner_width()).unwrap_or(1200.0), size(w.inner_height()).unwrap_or(800.0))
+}
+
 pub fn fmt_time(ms: i64) -> String {
     let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64));
     format!("{:02}:{:02}:{:02}.{:03}", d.get_hours(), d.get_minutes(), d.get_seconds(), d.get_milliseconds())
@@ -72,4 +101,20 @@ pub fn hue(s: &str) -> u32 {
         h = h.wrapping_mul(16_777_619);
     }
     h % 360
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts() {
+        assert_eq!(fmt_count(0), "0");
+        assert_eq!(fmt_count(999), "999");
+        assert_eq!(fmt_count(1000), "1,000");
+        assert_eq!(fmt_count(1234567), "1,234,567");
+        assert_eq!(fmt_thousands(800), "800");
+        assert_eq!(fmt_thousands(5000), "5k");
+        assert_eq!(fmt_thousands(2500), "2.5k");
+    }
 }

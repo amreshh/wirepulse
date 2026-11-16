@@ -125,6 +125,15 @@ fn reserved_name(identity: u32) -> Option<&'static str> {
     })
 }
 
+/// The endpoint's namespace: Hubble's, or the one in its identity's labels
+/// when Hubble knew only the identity.
+fn namespace(ep: &Endpoint) -> &str {
+    if !ep.namespace.is_empty() {
+        return &ep.namespace;
+    }
+    ep.labels.iter().find_map(|l| l.strip_prefix("k8s:io.kubernetes.pod.namespace=")).unwrap_or_default()
+}
+
 pub fn endpoint_id(ep: &Endpoint) -> String {
     if !ep.pod_name.is_empty() {
         return format!("{}/{}", ep.namespace, ep.pod_name);
@@ -148,7 +157,13 @@ pub fn endpoint_id(ep: &Endpoint) -> String {
     }
     match reserved_name(ep.identity) {
         Some(n) => format!("reserved:{n}"),
-        None => format!("identity:{}", ep.identity),
+        // Hubble knew the identity but not the pod: the agent that saw the
+        // flow had no pod for that IP. Its namespace still places it in the
+        // cluster, and `AppState::ingest` looks for the pod.
+        None => match namespace(ep) {
+            ns if !ns.is_empty() && ep.identity != 0 => format!("{ns}/identity:{}", ep.identity),
+            _ => format!("identity:{}", ep.identity),
+        },
     }
 }
 
@@ -225,7 +240,7 @@ fn endpoint_detail(
 ) -> EndpointDetail {
     EndpointDetail {
         id: ep.map(endpoint_id).unwrap_or_else(|| "unknown".into()),
-        namespace: ep.map(|e| e.namespace.clone()).unwrap_or_default(),
+        namespace: ep.map(|e| namespace(e).to_string()).unwrap_or_default(),
         pod: ep.map(|e| e.pod_name.clone()).unwrap_or_default(),
         workload: ep.map(workload).unwrap_or_default(),
         identity: ep.map_or(0, |e| e.identity),
@@ -538,7 +553,7 @@ mod relay_tests {
                 .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
         );
 
-        let state = crate::state::AppState::new(false);
+        let state = crate::state::AppState::new(false, crate::state::DEFAULT_FLOW_HISTORY);
         let mut connected = false;
         stream(&format!("http://{addr}"), &state, &mut connected).await.unwrap();
 
@@ -550,7 +565,7 @@ mod relay_tests {
         }
         assert!(connected);
         assert!(state.status.read().unwrap().hubble_connected);
-        let flows = state.recent_flows();
+        let flows = state.recent_flows(crate::state::DEFAULT_SNAPSHOT, None);
         assert_eq!(flows.len(), 2);
         assert_eq!(flows[0].destination, "pay/db-0");
         assert_eq!(flows[1].source, "reserved:world");
@@ -570,7 +585,7 @@ mod relay_tests {
             assert_eq!(r[1].number, 0, "`number` and `since` don't mix");
             assert!(r[1].since.is_some());
         }
-        let flows = state.recent_flows();
+        let flows = state.recent_flows(crate::state::DEFAULT_SNAPSHOT, None);
         assert_eq!(flows.len(), 3, "only the new flow is added");
         assert_eq!(flows[2].destination, "shop/cart-0");
     }
@@ -615,6 +630,10 @@ mod tests {
         assert_eq!(endpoint_id(&ep("", "", &["cidr:10.0.0.0/8"], 16777217)), "reserved:world");
         assert_eq!(endpoint_id(&ep("", "", &[], 1)), "reserved:host");
         assert_eq!(endpoint_id(&ep("", "", &[], 99999)), "identity:99999");
+        // Known by identity only: still in its namespace, from Hubble or the labels.
+        let labels = ["k8s:app=helm-controller", "k8s:io.kubernetes.pod.namespace=flux-system"];
+        assert_eq!(endpoint_id(&ep("flux-system", "", &labels, 65478)), "flux-system/identity:65478");
+        assert_eq!(endpoint_id(&ep("", "", &labels, 65478)), "flux-system/identity:65478");
     }
 
     #[test]

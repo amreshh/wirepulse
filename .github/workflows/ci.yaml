@@ -295,6 +295,16 @@ jobs:
     permissions:
       contents: read
       packages: write
+    env:
+      # The build's layers (the compiled dependencies among them), kept in
+      # GHCR next to the image. Not the Actions cache (type=gha): that's
+      # scoped by branch, so a pull request only sees its own runs' layers
+      # and main's, and main never builds (it releases the tested image), so
+      # every new pull request compiled everything. A registry ref is shared
+      # by dev pushes and every pull request. Pull requests from forks can't
+      # push, so they only read it (ignore-error: the build doesn't fail on
+      # that).
+      BUILD_CACHE: ghcr.io/${{ github.repository }}:buildcache
     steps:
       # Pull requests: the head commit (the one WIREPULSE_COMMIT names), not
       # GitHub's test merge commit. (Empty on other events: the default.)
@@ -343,11 +353,12 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
-          # metadata-action reads the license from a LICENSE file, and there is none.
+          # metadata-action takes the license from GitHub's reading of the
+          # default branch, which a pull request's change doesn't reach: say it here.
           EXTRA: |
             org.opencontainers.image.title=wirepulse
             org.opencontainers.image.authors=amreshh (https://github.com/amreshh)
-            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.licenses=MIT
             org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}#readme
         with:
           images: ghcr.io/${{ github.repository }}
@@ -411,8 +422,8 @@ jobs:
             WIREPULSE_VERSION=${{ steps.version.outputs.version }}
           load: true
           tags: wirepulse:pr
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=${{ env.BUILD_CACHE }}
+          cache-to: type=registry,ref=${{ env.BUILD_CACHE }},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
 
       # Pull requests: start the image and check that it answers, so an image
       # that doesn't work can't be merged, and so released: main releases
@@ -526,8 +537,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=${{ env.BUILD_CACHE }}
+          cache-to: type=registry,ref=${{ env.BUILD_CACHE }},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
 
       # The tested image with the release tags and labels, and main's commit:
       # the one the release tag points at, with the same code as the pull

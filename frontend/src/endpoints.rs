@@ -6,6 +6,7 @@ use crate::filter_bar::FilterBar;
 use crate::flows::labels_view;
 use crate::icons;
 use crate::util::fmt_rate;
+use crate::widgets::SidePanel;
 use crate::yaml::Yaml;
 use common::aggregate::kind_of_workload;
 use common::filter::EndpointRef;
@@ -377,7 +378,7 @@ fn EndpointDetail(open: RwSignal<Option<String>>, traffic: Memo<Traffic>) -> imp
         };
         let (id_map, id_flows, id_traffic) = (e.id.clone(), e.id.clone(), e.id.clone());
         Some(view! {
-            <aside class="flow-detail">
+            <SidePanel>
                 <div class="details-head">
                     <div class="head-main">
                         <span class="ico big" inner_html=icons::svg(kind_of_workload(&e.workload))></span>
@@ -430,7 +431,7 @@ fn EndpointDetail(open: RwSignal<Option<String>>, traffic: Memo<Traffic>) -> imp
                     Some(text) => view! { <Yaml text=text /> }.into_any(),
                     None => view! { <pre class="yaml">"Loading…"</pre> }.into_any(),
                 }}
-            </aside>
+            </SidePanel>
         })
     }
 }
