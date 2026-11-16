@@ -1,15 +1,29 @@
 //! Cilium endpoints: `CiliumEndpoint` objects, or `CiliumEndpointSlice`
 //! entries when Cilium batches endpoints into slices.
+//!
+//! Both are watched: a kube-rs reflector lists them once, then applies the
+//! changes the API server sends, so a big cluster's endpoints aren't all sent
+//! again every few seconds. The view is rebuilt from that cache.
 
 use crate::state::{AppState, Inventory};
 use common::{EndpointInfo, EndpointsView};
-use kube::api::{ApiResource, DynamicObject, GroupVersionKind, ListParams};
+use futures::{FutureExt, StreamExt};
+use kube::api::{ApiResource, DynamicObject, GroupVersionKind, ListParams, TypeMeta};
+use kube::runtime::reflector::{self, Store};
+use kube::runtime::{watcher, WatchStreamExt};
 use kube::{Api, Client};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
+
+/// How often the view is rebuilt from the watched objects. It also picks up
+/// workload names and labels from the pod inventory.
+const REFRESH: Duration = Duration::from_secs(10);
+/// How long a new watch's first list may take before the loop goes on.
+const FIRST_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn refresh_loop(client: Client, state: Arc<AppState>) {
     // Workload names and fallback labels come from the pod inventory.
@@ -19,66 +33,159 @@ pub async fn refresh_loop(client: Client, state: Arc<AppState>) {
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    let mut tick = tokio::time::interval(Duration::from_secs(10));
+    let mut endpoints: Option<Watched> = None;
+    // Only watched while there are no CiliumEndpoints.
+    let mut slices: Option<Watched> = None;
+    let mut tick = tokio::time::interval(REFRESH);
     loop {
         tick.tick().await;
-        let (source, raw) = load(&client).await;
-        let parsed: Vec<(EndpointInfo, Value)> = raw
-            .into_iter()
-            .flat_map(|(kind, v)| match kind {
-                Source::Endpoint => parse_cep(&v).map(|e| (e, v)).into_iter().collect::<Vec<_>>(),
-                Source::Slice => parse_ces(&v),
-            })
-            .collect();
-        store(&state, source, parsed);
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Source {
-    Endpoint,
-    Slice,
-}
-
-async fn list(client: &Client, version: &str, kind: &str) -> Result<Vec<Value>, kube::Error> {
-    let ar = ApiResource::from_gvk(&GroupVersionKind::gvk("cilium.io", version, kind));
-    let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
-    let list = api.list(&ListParams::default()).await?;
-    Ok(list.items.iter().filter_map(|o| serde_json::to_value(o).ok()).collect())
-}
-
-async fn load(client: &Client) -> (&'static str, Vec<(Source, Value)>) {
-    match list(client, "v2", "CiliumEndpoint").await {
-        Ok(items) if !items.is_empty() => {
-            return ("CiliumEndpoint", items.into_iter().map(|v| (Source::Endpoint, v)).collect())
+        if endpoints.is_none() {
+            endpoints = Watched::start(&client, "CiliumEndpoint", &["v2"]).await;
         }
-        Ok(_) => {}
-        Err(kube::Error::Api(s)) if s.is_not_found() => {}
-        Err(e) => warn!(error = %e, "listing CiliumEndpoints failed"),
-    }
-    for version in ["v2", "v2alpha1"] {
-        match list(client, version, "CiliumEndpointSlice").await {
-            Ok(items) => return ("CiliumEndpointSlice", items.into_iter().map(|v| (Source::Slice, v)).collect()),
-            Err(kube::Error::Api(s)) if s.is_not_found() => continue,
-            Err(e) => {
-                warn!(error = %e, "listing CiliumEndpointSlices failed");
-                break;
+        let watching = endpoints.is_some();
+        match objects(&mut endpoints) {
+            // CiliumEndpoints have the most detail: used whenever there are any.
+            Some(objects) if !objects.is_empty() => {
+                slices = None;
+                let parsed =
+                    objects.into_iter().filter_map(|o| Some((parse_cep(&o)?, EndpointObject::Endpoint(o)))).collect();
+                store(&state, "CiliumEndpoint", parsed);
+                continue;
             }
+            // Not listed yet: wait for them rather than show the slices meanwhile.
+            None if watching => continue,
+            _ => {}
+        }
+        if slices.is_none() {
+            slices = Watched::start(&client, "CiliumEndpointSlice", &["v2", "v2alpha1"]).await;
+        }
+        let watching = slices.is_some();
+        match objects(&mut slices) {
+            Some(objects) => {
+                let parsed = objects
+                    .into_iter()
+                    .flat_map(|o| {
+                        parse_ces(&o).into_iter().map(move |(e, i)| (e, EndpointObject::SliceEntry(o.clone(), i)))
+                    })
+                    .collect();
+                store(&state, "CiliumEndpointSlice", parsed);
+            }
+            None if watching => {}
+            None => store(&state, "", Vec::new()),
         }
     }
-    ("", Vec::new())
+}
+
+/// One kind of object, kept in memory and up to date by a kube-rs reflector.
+struct Watched {
+    store: Store<DynamicObject>,
+    /// Set when the watch stopped on an error (e.g. RBAC doesn't allow
+    /// `watch`). The next round starts a new one, which lists everything again.
+    failed: Arc<AtomicBool>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Watched {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl Watched {
+    /// Watches `kind` (group `cilium.io`) in the first of `versions` the API
+    /// server has. `None` when it has none of them, or they can't be listed.
+    async fn start(client: &Client, kind: &'static str, versions: &[&str]) -> Option<Self> {
+        for version in versions {
+            let ar = ApiResource::from_gvk(&GroupVersionKind::gvk("cilium.io", version, kind));
+            let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
+            // Is it there, and may we read it? One object answers both.
+            match api.list(&ListParams::default().limit(1)).await {
+                Ok(_) => {}
+                Err(kube::Error::Api(s)) if s.is_not_found() => continue,
+                Err(e) => {
+                    warn!(error = %e, kind, "listing failed");
+                    return None;
+                }
+            }
+            // Listed objects come without apiVersion and kind, which the YAML view shows.
+            let types = TypeMeta { api_version: ar.api_version.clone(), kind: ar.kind.clone() };
+            let writer = reflector::store::Writer::new(ar);
+            let store = writer.as_reader();
+            // The first list may come from the API server's cache: the watch
+            // brings it up to date.
+            let events = watcher(api, watcher::Config::default().any_semantic())
+                .modify(move |o: &mut DynamicObject| {
+                    o.types = Some(types.clone());
+                    o.metadata.managed_fields = None;
+                })
+                .reflect(writer);
+            let failed = Arc::new(AtomicBool::new(false));
+            let task = tokio::spawn({
+                let failed = failed.clone();
+                async move {
+                    let mut events = std::pin::pin!(events);
+                    while let Some(event) = events.next().await {
+                        if let Err(e) = event {
+                            warn!(error = %e, kind, "watch failed; listing again");
+                            failed.store(true, Ordering::Relaxed);
+                            return;
+                        }
+                    }
+                }
+            });
+            let watched = Self { store, failed, task };
+            // So the caller can tell "there are none" from "not listed yet".
+            let _ = tokio::time::timeout(FIRST_LIST_TIMEOUT, watched.store.wait_until_ready()).await;
+            return Some(watched);
+        }
+        None
+    }
+}
+
+/// The objects in `slot`'s watch, once its first list has arrived. A watch
+/// that failed gets this last look, then is dropped so the next round starts
+/// a new one.
+fn objects(slot: &mut Option<Watched>) -> Option<Vec<Arc<DynamicObject>>> {
+    let w = slot.as_ref()?;
+    let listed = w.store.wait_until_ready().now_or_never().is_some_and(|r| r.is_ok());
+    let objects = listed.then(|| w.store.state());
+    if w.failed.load(Ordering::Relaxed) {
+        *slot = None;
+    }
+    objects
+}
+
+/// The object behind an endpoint, for its YAML: the watch's cached object
+/// itself, not a copy.
+#[derive(Clone)]
+pub enum EndpointObject {
+    /// A `CiliumEndpoint`.
+    Endpoint(Arc<DynamicObject>),
+    /// The entry at this index of a `CiliumEndpointSlice`'s `endpoints`.
+    SliceEntry(Arc<DynamicObject>, usize),
+}
+
+impl EndpointObject {
+    pub fn to_value(&self) -> Option<Value> {
+        match self {
+            Self::Endpoint(o) => serde_json::to_value(&**o).ok(),
+            Self::SliceEntry(o, i) => o.data.get("endpoints")?.get(*i).cloned(),
+        }
+    }
 }
 
 /// Saves the endpoints, filling in workloads and fallback labels from the
 /// pod inventory.
-pub fn store(state: &AppState, source: &str, parsed: Vec<(EndpointInfo, Value)>) {
-    let view = {
-        let inv = state.inventory.read().unwrap();
-        build_view(source, parsed.iter().map(|(e, _)| e.clone()).collect(), &inv)
-    };
-    let raw: HashMap<String, Value> = parsed.into_iter().map(|(e, v)| (e.id, v)).collect();
+pub fn store(state: &AppState, source: &str, parsed: Vec<(EndpointInfo, EndpointObject)>) {
+    let mut objects = HashMap::with_capacity(parsed.len());
+    let mut endpoints = Vec::with_capacity(parsed.len());
+    for (e, o) in parsed {
+        objects.insert(e.id.clone(), o);
+        endpoints.push(e);
+    }
+    let view = build_view(source, endpoints, &state.inventory.read().unwrap());
     *state.endpoints.write().unwrap() = view;
-    *state.endpoint_raw.write().unwrap() = raw;
+    *state.endpoint_objects.write().unwrap() = objects;
 }
 
 pub fn build_view(source: &str, mut endpoints: Vec<EndpointInfo>, inv: &Inventory) -> EndpointsView {
@@ -142,11 +249,11 @@ fn named_ports(v: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
-/// Parses a `CiliumEndpoint` object.
-pub fn parse_cep(v: &Value) -> Option<EndpointInfo> {
-    let namespace = s(v, "/metadata/namespace");
-    let name = v.pointer("/metadata/name")?.as_str()?.to_string();
-    let st = v.get("status");
+/// Parses a `CiliumEndpoint`.
+pub fn parse_cep(o: &DynamicObject) -> Option<EndpointInfo> {
+    let name = o.metadata.name.clone()?;
+    let namespace = o.metadata.namespace.clone().unwrap_or_default();
+    let st = o.data.get("status");
     let get = |p: &str| st.and_then(|s| s.pointer(p));
     let (ipv4, ipv6) = addressing(get("/networking"));
     Some(EndpointInfo {
@@ -172,14 +279,16 @@ pub fn parse_cep(v: &Value) -> Option<EndpointInfo> {
 }
 
 /// Parses the entries of a `CiliumEndpointSlice` (fewer details than a
-/// `CiliumEndpoint`: no endpoint id, state or labels).
-pub fn parse_ces(v: &Value) -> Vec<(EndpointInfo, Value)> {
-    let namespace = s(v, "/namespace");
-    v.get("endpoints")
+/// `CiliumEndpoint`: no endpoint id, state or labels), each with its index.
+pub fn parse_ces(o: &DynamicObject) -> Vec<(EndpointInfo, usize)> {
+    let namespace = s(&o.data, "/namespace");
+    o.data
+        .get("endpoints")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|e| {
+        .enumerate()
+        .filter_map(|(i, e)| {
             let name = e.get("name")?.as_str()?.to_string();
             let (ipv4, ipv6) = addressing(e.get("networking"));
             let info = EndpointInfo {
@@ -193,7 +302,7 @@ pub fn parse_ces(v: &Value) -> Vec<(EndpointInfo, Value)> {
                 named_ports: named_ports(e.get("named-ports")),
                 ..Default::default()
             };
-            Some((info, e.clone()))
+            Some((info, i))
         })
         .collect()
 }
@@ -203,9 +312,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn object(v: Value) -> DynamicObject {
+        serde_json::from_value(v).unwrap()
+    }
+
     #[test]
     fn parses_cilium_endpoint() {
-        let v = json!({
+        let o = object(json!({
             "metadata": {"name": "web-1", "namespace": "shop"},
             "status": {
                 "id": 1234,
@@ -216,8 +329,8 @@ mod tests {
                 "service-account": "web",
                 "named-ports": [{"name": "http", "port": 8080, "protocol": "TCP"}]
             }
-        });
-        let e = parse_cep(&v).unwrap();
+        }));
+        let e = parse_cep(&o).unwrap();
         assert_eq!(e.id, "shop/web-1");
         assert_eq!((e.endpoint_id, e.identity), (1234, 56789));
         assert_eq!((e.ipv4.as_str(), e.ipv6.as_str()), ("10.0.1.5", "fd00::5"));
@@ -229,15 +342,16 @@ mod tests {
 
     #[test]
     fn parses_slice_and_fills_from_inventory() {
-        let v = json!({
+        let o = object(json!({
             "metadata": {"name": "ces-abc"},
             "namespace": "shop",
             "endpoints": [
                 {"name": "web-1", "id": 777, "networking": {"addressing": [{"ipv4": "10.0.1.5"}], "node": "n1"}}
             ]
-        });
-        let parsed = parse_ces(&v);
+        }));
+        let parsed = parse_ces(&o);
         assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].1, 0, "index of the entry");
         let mut inv = Inventory::default();
         inv.nodes.push(common::Node {
             id: "shop/web-1".into(),
@@ -258,5 +372,27 @@ mod tests {
         assert_eq!(e.labels, vec!["k8s:app=web"]);
         assert_eq!(view.pod_labels["shop/hostnet"], vec!["k8s:app=agent"]);
         assert!(!view.pod_labels.contains_key("shop/web-1"));
+    }
+
+    #[test]
+    fn yaml_is_the_endpoint_or_its_slice_entry() {
+        let cep = object(json!({
+            "apiVersion": "cilium.io/v2", "kind": "CiliumEndpoint",
+            "metadata": {"name": "web-1", "namespace": "shop"},
+            "status": {"id": 1234}
+        }));
+        let v = EndpointObject::Endpoint(Arc::new(cep)).to_value().unwrap();
+        assert_eq!(v["kind"], "CiliumEndpoint");
+        assert_eq!(v["metadata"]["name"], "web-1");
+        assert_eq!(v["status"]["id"], 1234);
+
+        let slice = object(json!({
+            "apiVersion": "cilium.io/v2", "kind": "CiliumEndpointSlice",
+            "metadata": {"name": "ces-abc"},
+            "namespace": "shop",
+            "endpoints": [{"name": "web-1", "id": 777}, {"name": "web-2", "id": 778}]
+        }));
+        let entry = EndpointObject::SliceEntry(Arc::new(slice), 1).to_value().unwrap();
+        assert_eq!(entry, json!({"name": "web-2", "id": 778}));
     }
 }

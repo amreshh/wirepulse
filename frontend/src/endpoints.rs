@@ -353,10 +353,15 @@ fn EndpointDetail(open: RwSignal<Option<String>>, traffic: Memo<Traffic>) -> imp
         });
     });
 
-    move || {
+    // The open endpoint. The list is fetched again every 10 s; a memo changes
+    // (and redraws the panel) only when this endpoint does.
+    let endpoint = Memo::new(move |_| {
         let id = open.get()?;
-        let e = ctx.endpoints.with(|v| v.endpoints.iter().find(|e| e.id == id).cloned())?;
-        let (tin, tout, tdrop) = traffic.with(|t| t.get(&id).copied().unwrap_or_default());
+        ctx.endpoints.with(|v| v.endpoints.iter().find(|e| e.id == id).cloned())
+    });
+
+    move || {
+        let e = endpoint.get()?;
         let row = |k: &'static str, v: String| {
             (!v.is_empty()).then(|| {
                 view! {
@@ -370,7 +375,7 @@ fn EndpointDetail(open: RwSignal<Option<String>>, traffic: Memo<Traffic>) -> imp
             Some(false) => "not enforced (all allowed)".to_string(),
             None => String::new(),
         };
-        let (id_map, id_flows) = (e.id.clone(), e.id.clone());
+        let (id_map, id_flows, id_traffic) = (e.id.clone(), e.id.clone(), e.id.clone());
         Some(view! {
             <aside class="flow-detail">
                 <div class="details-head">
@@ -408,7 +413,14 @@ fn EndpointDetail(open: RwSignal<Option<String>>, traffic: Memo<Traffic>) -> imp
                     {row("ingress", enf(e.ingress_enforcing))} {row("egress", enf(e.egress_enforcing))}
                     {row("workload", e.workload.clone())} {row("service account", e.service_account.clone())}
                     {row("named ports", e.named_ports.join(", "))} <span>"traffic"</span>
-                    <b>{format!("in {} · out {} · dropped {}", fmt_rate(tin), fmt_rate(tout), fmt_rate(tdrop))}</b>
+                    // The rates change every 2 s, and only this text follows them: the rest of the
+                    // panel isn't built again, so text selected in its YAML stays selected.
+                    <b>
+                        {move || {
+                            let (tin, tout, tdrop) = traffic.with(|t| t.get(&id_traffic).copied().unwrap_or_default());
+                            format!("in {} · out {} · dropped {}", fmt_rate(tin), fmt_rate(tout), fmt_rate(tdrop))
+                        }}
+                    </b>
                 </div>
                 <h4>"Identity labels"</h4>
                 <p class="muted small">"Click a label to filter by it."</p>

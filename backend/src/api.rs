@@ -110,12 +110,9 @@ async fn endpoint_yaml(
     State(s): State<Arc<AppState>>,
     axum::extract::Path((namespace, name)): axum::extract::Path<(String, String)>,
 ) -> Result<String, axum::http::StatusCode> {
-    s.endpoint_raw
-        .read()
-        .unwrap()
-        .get(&format!("{namespace}/{name}"))
-        .map(crate::policy::to_yaml)
-        .ok_or(axum::http::StatusCode::NOT_FOUND)
+    // Rendered after the lock is released.
+    let object = s.endpoint_objects.read().unwrap().get(&format!("{namespace}/{name}")).cloned();
+    object.and_then(|o| o.to_value()).map(|v| crate::policy::to_yaml(&v)).ok_or(axum::http::StatusCode::NOT_FOUND)
 }
 
 async fn config(State(s): State<Arc<AppState>>) -> Json<ConfigView> {
