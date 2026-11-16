@@ -35,9 +35,11 @@ rules:
       - ciliumclusterwidenetworkpolicies
       - ciliumnodeconfigs
     verbs: ["get", "list"]
-  # Watched: the API server sends what changes, not every endpoint each time.
+  # Watched: the API server sends what changes, not every object each time.
+  # CiliumNodes list each node's addresses, which name the node behind
+  # Hubble's host, remote-node and kube-apiserver.
   - apiGroups: ["cilium.io"]
-    resources: ["ciliumendpoints", "ciliumendpointslices"]
+    resources: ["ciliumendpoints", "ciliumendpointslices", "ciliumnodes"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

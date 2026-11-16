@@ -6,6 +6,7 @@ mod flows;
 mod hosts;
 mod hubble;
 mod k8s;
+mod nodes;
 mod policy;
 mod proto;
 mod state;
@@ -89,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
                 tokio::spawn(k8s::run_inventory(client.clone(), state.clone()));
                 tokio::spawn(policy::refresh_loop(client.clone(), state.clone()));
                 tokio::spawn(endpoints::refresh_loop(client.clone(), state.clone()));
+                tokio::spawn(nodes::refresh_loop(client.clone(), state.clone()));
                 tokio::spawn(config::refresh_loop(
                     client,
                     state.clone(),

@@ -4,8 +4,9 @@
 //! are ingested like Hubble flows, and demo policies and config are plain
 //! Kubernetes JSON objects parsed by `policy::parse_all` and `config::build_view`.
 
+use crate::proto::flow::Endpoint;
 use crate::state::{now_ms, AppState, Inventory};
-use crate::{config, endpoints, policy};
+use crate::{config, endpoints, hubble, nodes, policy};
 use common::{
     EndpointDetail, FlowDetail, FlowEvent, L7Detail, Node, NodeConfigOverride, NodeKind, PolicyKind, Verdict,
 };
@@ -37,6 +38,17 @@ const WORKLOADS: &[(&str, &str, &str, usize)] = &[
     ("auth", "Pod", "debug-shell", 1),
 ];
 
+/// The nodes: (name, InternalIP, CiliumInternalIP, control plane). Pods run
+/// on the workers, and their CiliumEndpoints name the InternalIP.
+const NODES: &[(&str, &str, &str, bool)] = &[
+    ("cp-1", "192.168.10.10", "10.0.200.1", true),
+    ("worker-1", "192.168.10.1", "10.0.201.1", false),
+    ("worker-2", "192.168.10.2", "10.0.202.1", false),
+    ("worker-3", "192.168.10.3", "10.0.203.1", false),
+];
+
+/// `src` and `dst` are workloads (`namespace/name`), `reserved:world`, or a
+/// node: `node:<name>`, or `node:*` for any node.
 struct Pattern {
     src: &'static str,
     dst: &'static str,
@@ -82,12 +94,15 @@ const PATTERNS: &[Pattern] = &[
     p("monitoring/vmagent", "payments/payments-api", 9090, 0.3, "HTTP GET /metrics 200"),
     p("monitoring/vmagent", "frontend/web", 9090, 0.3, "HTTP GET /metrics 200"),
     p("monitoring/grafana", "auth/keycloak", 8443, 0.2, ""),
-    p("kube-system/hubble-relay", "reserved:host", 4244, 1.0, ""),
+    // Hubble Relay reads every node's Hubble server, vmagent the kubelets'
+    // metrics.
+    p("kube-system/hubble-relay", "node:*", 4244, 1.0, ""),
+    p("monitoring/vmagent", "node:*", 10250, 0.4, ""),
     p("monitoring/vmagent", "monitoring/node-exporter", 9100, 0.6, "HTTP GET /metrics 200"),
     p("shop/catalog-sync", "shop/catalog", 8080, 0.4, "HTTP PUT /api/products/bulk 204"),
     Pattern { dns: "feeds.example.com", ..p("shop/catalog-sync", "reserved:world", 443, 0.2, "") },
     p("payments/db-migrate", "payments/postgres", 5432, 0.3, ""),
-    p("kube-system/coredns", "reserved:kube-apiserver", 6443, 0.3, ""),
+    p("kube-system/coredns", "node:cp-1", 6443, 0.3, ""),
 ];
 
 /// Every workload also resolves DNS through CoreDNS.
@@ -187,46 +202,96 @@ impl Cluster {
         inv
     }
 
-    fn endpoint(&self, key: &str, rng: &mut Rng) -> EndpointDetail {
-        match self.pods.get(key) {
-            Some(pods) => {
-                let p = rng.pick(pods);
-                let app = key.split_once('/').map_or(key, |(_, a)| a);
-                EndpointDetail {
-                    id: p.id.clone(),
-                    namespace: p.namespace.clone(),
-                    pod: p.name.clone(),
-                    workload: p.workload.clone(),
-                    identity: identity(key),
-                    ip: p.ip.clone(),
-                    port: 0,
-                    labels: vec![
-                        format!("k8s:app={app}"),
-                        format!("k8s:io.kubernetes.pod.namespace={}", p.namespace),
-                        format!("k8s:io.cilium.k8s.policy.serviceaccount={app}"),
-                        "k8s:io.cilium.k8s.policy.cluster=demo".into(),
-                    ],
-                    service: format!("{}/{app}", p.namespace),
-                    names: vec![],
-                }
-            }
-            None => {
-                let entity = key.strip_prefix("reserved:").unwrap_or(key);
-                let (identity, ip) = match entity {
-                    "host" => (1, "10.0.0.11".to_string()),
-                    "kube-apiserver" => (7, "10.0.0.1".to_string()),
-                    _ => (2, format!("203.0.113.{}", 10 + rng.next() % 200)),
-                };
-                EndpointDetail {
-                    id: key.to_string(),
-                    identity,
-                    ip,
-                    labels: vec![format!("reserved:{entity}")],
-                    ..Default::default()
-                }
-            }
+    /// One of the workload's pods; `None` when `key` isn't a workload.
+    fn pick<'a>(&'a self, key: &str, rng: &mut Rng) -> Option<&'a Node> {
+        self.pods.get(key).map(|pods| rng.pick(pods))
+    }
+
+    /// One side of a flow as Hubble reports it: `pod` is the pod picked for
+    /// `key`, and `observer` the node that saw the flow.
+    fn endpoint(&self, key: &str, pod: Option<&Node>, observer: &str, rng: &mut Rng) -> EndpointDetail {
+        if let Some(p) = pod {
+            let app = key.split_once('/').map_or(key, |(_, a)| a);
+            return EndpointDetail {
+                id: p.id.clone(),
+                namespace: p.namespace.clone(),
+                pod: p.name.clone(),
+                workload: p.workload.clone(),
+                identity: identity(key),
+                ip: p.ip.clone(),
+                port: 0,
+                labels: vec![
+                    format!("k8s:app={app}"),
+                    format!("k8s:io.kubernetes.pod.namespace={}", p.namespace),
+                    format!("k8s:io.cilium.k8s.policy.serviceaccount={app}"),
+                    "k8s:io.cilium.k8s.policy.cluster=demo".into(),
+                ],
+                service: format!("{}/{app}", p.namespace),
+                names: vec![],
+            };
+        }
+        if let Some(node) = key.strip_prefix("node:") {
+            let name = if node == "*" { rng.pick(NODES).0 } else { node };
+            return node_endpoint(name, observer);
+        }
+        let entity = key.strip_prefix("reserved:").unwrap_or(key);
+        EndpointDetail {
+            id: key.to_string(),
+            identity: 2,
+            ip: format!("203.0.113.{}", 10 + rng.next() % 200),
+            labels: vec![format!("reserved:{entity}")],
+            ..Default::default()
         }
     }
+}
+
+/// A node's InternalIP as Hubble on `observer` reports it: Cilium's `host`
+/// there and `remote-node` elsewhere, plus `kube-apiserver` on the node the
+/// API server runs on.
+fn node_endpoint(name: &str, observer: &str) -> EndpointDetail {
+    let Some(&(_, internal, _, control_plane)) = NODES.iter().find(|n| n.0 == name) else {
+        return EndpointDetail::default();
+    };
+    let local = name == observer;
+    let mut labels = vec![if local { "reserved:host" } else { "reserved:remote-node" }.to_string()];
+    if control_plane {
+        labels.push("reserved:kube-apiserver".into());
+    }
+    let identity = match (local, control_plane) {
+        (true, _) => 1,
+        (false, true) => 7,
+        (false, false) => 6,
+    };
+    EndpointDetail {
+        id: hubble::endpoint_id(&Endpoint { identity, labels: labels.clone(), ..Default::default() }),
+        identity,
+        ip: internal.into(),
+        labels,
+        ..Default::default()
+    }
+}
+
+/// `CiliumNode` objects for the nodes, parsed like real ones.
+fn demo_nodes() -> Vec<DynamicObject> {
+    NODES
+        .iter()
+        .filter_map(|(name, internal, router, control_plane)| {
+            let mut labels = json!({"kubernetes.io/hostname": name, "kubernetes.io/os": "linux"});
+            if *control_plane {
+                labels["node-role.kubernetes.io/control-plane"] = json!("");
+            }
+            serde_json::from_value(json!({
+                "apiVersion": "cilium.io/v2",
+                "kind": "CiliumNode",
+                "metadata": {"name": name, "labels": labels},
+                "spec": {"addresses": [
+                    {"type": "InternalIP", "ip": internal},
+                    {"type": "CiliumInternalIP", "ip": router},
+                ]}
+            }))
+            .ok()
+        })
+        .collect()
 }
 
 /// Stable fake security identity per workload.
@@ -266,8 +331,12 @@ fn l7_detail(l7: &str, rng: &mut Rng) -> Option<L7Detail> {
 }
 
 fn event(cluster: &Cluster, rng: &mut Rng, pat: &Pattern, dns_query: &str) -> Vec<FlowDetail> {
-    let mut src = cluster.endpoint(pat.src, rng);
-    let mut dst = cluster.endpoint(pat.dst, rng);
+    // The pods first: where the flow is seen decides how Hubble names a node.
+    let src_pod = cluster.pick(pat.src, rng);
+    let dst_pod = cluster.pick(pat.dst, rng);
+    let node = src_pod.or(dst_pod).map(|p| p.node_name.clone()).unwrap_or_default();
+    let mut src = cluster.endpoint(pat.src, src_pod, &node, rng);
+    let mut dst = cluster.endpoint(pat.dst, dst_pod, &node, rng);
     // Now and then Hubble knows only the identity of the far side (the agent
     // that saw the flow had no pod for its IP), as `hubble::endpoint_id`
     // writes it; the server names the pod again.
@@ -281,12 +350,6 @@ fn event(cluster: &Cluster, rng: &mut Rng, pat: &Pattern, dns_query: &str) -> Ve
     if !pat.dns.is_empty() {
         dst.names = vec![pat.dns.to_string()];
     }
-    let node = cluster
-        .pods
-        .get(pat.src)
-        .or_else(|| cluster.pods.get(pat.dst))
-        .map(|p| p[0].node_name.clone())
-        .unwrap_or_default();
     let l7_text = if pat.l7 == "DNS" { format!("DNS {dns_query}") } else { pat.l7.to_string() };
     let l7 = l7_detail(&l7_text, rng);
     let tcp = pat.proto == "TCP";
@@ -297,7 +360,7 @@ fn event(cluster: &Cluster, rng: &mut Rng, pat: &Pattern, dns_query: &str) -> Ve
     } else {
         *rng.pick(&["SYN", "ACK PSH", "ACK", "ACK PSH", "ACK FIN"])
     };
-    let to_world = pat.dst.starts_with("reserved:");
+    let to_pod = dst_pod.is_some();
     let event = FlowEvent {
         id: 0,
         time_ms: now_ms(),
@@ -310,7 +373,7 @@ fn event(cluster: &Cluster, rng: &mut Rng, pat: &Pattern, dns_query: &str) -> Ve
         dst_port: pat.port,
         verdict: if pat.dropped { Verdict::Dropped } else { Verdict::Forwarded },
         drop_reason: if pat.dropped { "POLICY_DENIED".into() } else { String::new() },
-        direction: if to_world { "egress" } else { "ingress" }.into(),
+        direction: if to_pod { "ingress" } else { "egress" }.into(),
         l7: if pat.l7 == "DNS" {
             l7.as_ref().map(|d| format!("DNS {} → {}", d.dns_query, d.dns_ips.join(", "))).unwrap_or_default()
         } else {
@@ -328,10 +391,10 @@ fn event(cluster: &Cluster, rng: &mut Rng, pat: &Pattern, dns_query: &str) -> Ve
         latency_ms: l7.as_ref().map_or(0.0, |d| d.latency_ms as f32),
         trace_point: if pat.dropped {
             String::new()
-        } else if to_world {
-            "to-stack".into()
-        } else {
+        } else if to_pod {
             "to-endpoint".into()
+        } else {
+            "to-stack".into()
         },
     };
     let (allowed_by, denied_by) = match pat.policy.strip_prefix("deny ") {
@@ -351,7 +414,7 @@ fn event(cluster: &Cluster, rng: &mut Rng, pat: &Pattern, dns_query: &str) -> Ve
         source: src,
         destination: dst,
         ip_version: "IPv4".into(),
-        encrypted: !to_world && !pat.src.starts_with("reserved:"),
+        encrypted: src_pod.is_some() && to_pod,
         trace_reason: if pat.dropped { String::new() } else { "new".into() },
         interface: String::new(),
         l7,
@@ -380,7 +443,7 @@ fn event(cluster: &Cluster, rng: &mut Rng, pat: &Pattern, dns_query: &str) -> Ve
     e.latency_ms = 0.0;
     e.dst_dns = String::new();
     e.tcp_flags = if tcp { "ACK".into() } else { String::new() };
-    e.direction = if to_world { "ingress" } else { "egress" }.into();
+    e.direction = if to_pod { "egress" } else { "ingress" }.into();
     e.trace_point = "to-endpoint".into();
     reply.l7 = None;
     reply.trace_reason = "reply".into();
@@ -406,6 +469,7 @@ pub async fn run(state: Arc<AppState>) {
         endpoints::store(state, "CiliumEndpoint (demo)", eps);
     };
     refresh(&state, &cluster);
+    *state.node_index.write().unwrap() = nodes::NodeIndex::new(demo_nodes().iter().filter_map(nodes::parse).collect());
     *state.config.write().unwrap() = demo_config();
     state.update_status(|s| {
         s.hubble_connected = true;

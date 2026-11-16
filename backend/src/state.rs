@@ -3,9 +3,10 @@
 
 use crate::endpoints::{EndpointIndex, EndpointObject};
 use crate::flows::FlowAggregator;
+use crate::nodes::{self, NodeIndex};
 use common::{
-    is_unresolved, ConfigView, EndpointsView, FlowDetail, FlowEvent, Graph, Info, Node, NodeKind, PolicyInfo,
-    ServerMsg, Status, EXTERNAL_GROUP,
+    entity_group, is_unresolved, node_of, ConfigView, EndpointsView, FlowDetail, FlowEvent, Graph, Info, Node,
+    NodeKind, PolicyInfo, ServerMsg, Status,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,6 +55,9 @@ pub struct AppState {
     pub endpoint_objects: RwLock<HashMap<String, EndpointObject>>,
     /// `endpoints` by IP and identity, for flows Hubble sends without a pod.
     pub endpoint_index: RwLock<EndpointIndex>,
+    /// The cluster's nodes by address, to name the node behind Cilium's
+    /// `host`, `remote-node` and `kube-apiserver` entities.
+    pub node_index: RwLock<NodeIndex>,
     latest_graph: RwLock<Arc<str>>,
     pub tx: broadcast::Sender<Arc<str>>,
 }
@@ -107,6 +111,7 @@ impl AppState {
             endpoints: RwLock::default(),
             endpoint_objects: RwLock::default(),
             endpoint_index: RwLock::default(),
+            node_index: RwLock::default(),
             latest_graph: RwLock::new(encode(&ServerMsg::Graph(Graph::default()))),
             tx,
         })
@@ -138,21 +143,30 @@ impl AppState {
     }
 
     /// Names the pods Hubble left out of a flow (see `EndpointIndex::resolve`),
-    /// so they show up in their namespace, not as outside the cluster.
+    /// so they show up in their namespace, not as "pod not known"; and the
+    /// nodes behind Cilium's node entities (see `NodeIndex::resolve`).
     fn resolve_endpoints(&self, d: &mut FlowDetail) {
-        if !is_unresolved(&d.source.id) && !is_unresolved(&d.destination.id) {
-            return;
+        if is_unresolved(&d.source.id) || is_unresolved(&d.destination.id) {
+            let ix = self.endpoint_index.read().unwrap();
+            if ix.resolve(&mut d.source) {
+                d.event.source = d.source.id.clone();
+                d.event.src_workload = d.source.workload.clone();
+                d.event.src_identity = d.source.identity;
+            }
+            if ix.resolve(&mut d.destination) {
+                d.event.destination = d.destination.id.clone();
+                d.event.dst_workload = d.destination.workload.clone();
+                d.event.dst_identity = d.destination.identity;
+            }
         }
-        let ix = self.endpoint_index.read().unwrap();
-        if ix.resolve(&mut d.source) {
-            d.event.source = d.source.id.clone();
-            d.event.src_workload = d.source.workload.clone();
-            d.event.src_identity = d.source.identity;
-        }
-        if ix.resolve(&mut d.destination) {
-            d.event.destination = d.destination.id.clone();
-            d.event.dst_workload = d.destination.workload.clone();
-            d.event.dst_identity = d.destination.identity;
+        if nodes::is_node_entity(&d.source.id) || nodes::is_node_entity(&d.destination.id) {
+            let ix = self.node_index.read().unwrap();
+            if ix.resolve(&mut d.source, &d.event.node) {
+                d.event.source = d.source.id.clone();
+            }
+            if ix.resolve(&mut d.destination, &d.event.node) {
+                d.event.destination = d.destination.id.clone();
+            }
         }
     }
 
@@ -224,10 +238,12 @@ impl AppState {
             (f.edges(), f.workloads.clone())
         };
         let mut nodes = self.inventory.read().unwrap().nodes.clone();
+        let have_pods = !nodes.is_empty();
+        nodes.extend(self.node_index.read().unwrap().map_nodes());
         let mut known: HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
         // Pods that are gone from Kubernetes disappear once their traffic stops,
         // instead of lingering for the full edge TTL.
-        if !nodes.is_empty() {
+        if have_pods {
             let gone = |id: &str| id.contains('/') && !known.contains(id);
             edges.retain(|e| e.idle_secs < STALE_POD_SECS || !(gone(&e.source) || gone(&e.target)));
         }
@@ -273,6 +289,10 @@ impl AppState {
 /// Node for an endpoint that only appears in flows (reserved identities,
 /// pods the inventory has not seen, or when Kubernetes is unavailable).
 fn endpoint_node(id: &str, workload: Option<&String>) -> Node {
+    if let Some(name) = node_of(id) {
+        // Named after the node that saw the flow, without a CiliumNode.
+        return nodes::map_node(name, None);
+    }
     if let Some((ns, pod)) = id.split_once('/') {
         Node {
             id: id.into(),
@@ -289,7 +309,7 @@ fn endpoint_node(id: &str, workload: Option<&String>) -> Node {
         Node {
             id: id.into(),
             kind: NodeKind::External,
-            namespace: EXTERNAL_GROUP.into(),
+            namespace: entity_group(id).into(),
             workload: name.clone(),
             name,
             node_name: String::new(),
@@ -396,13 +416,74 @@ mod tests {
         assert_eq!(s.flow_detail(flows[0].id).unwrap().source.pod, "helm-controller-5d8f-x2k4q");
         assert_eq!(flows[1].source, "flux-system/identity:65478");
         assert_eq!(flows[1].src_workload, "Deployment/helm-controller");
-        // On the map they're pods of the workload, not outside the cluster.
+        // On the map they're pods of the workload, not "pod not known".
         s.flows.lock().unwrap().tick();
         let g = s.build_graph();
         for id in ["flux-system/helm-controller-5d8f-x2k4q", "flux-system/identity:65478"] {
             let n = g.nodes.iter().find(|n| n.id == id).unwrap();
             assert_eq!((n.kind, n.workload.as_str()), (NodeKind::Pod, "Deployment/helm-controller"));
         }
+    }
+
+    #[test]
+    fn names_nodes_behind_cilium_node_entities() {
+        let s = AppState::new(true, 200);
+        let node = |name: &str, ip: &str, control_plane: bool| nodes::NodeInfo {
+            name: name.into(),
+            ips: vec![ip.parse().unwrap()],
+            ip: ip.into(),
+            control_plane,
+        };
+        *s.node_index.write().unwrap() =
+            NodeIndex::new(vec![node("cp-1", "192.168.10.10", true), node("worker-1", "192.168.10.1", false)]);
+        let ep = |id: &str, identity: u32, ip: &str| common::EndpointDetail {
+            id: id.into(),
+            identity,
+            ip: ip.into(),
+            ..Default::default()
+        };
+        let flow = |src: common::EndpointDetail, dst: common::EndpointDetail| FlowDetail {
+            event: FlowEvent {
+                node: "default/worker-2".into(),
+                source: src.id.clone(),
+                destination: dst.id.clone(),
+                time_ms: now_ms(),
+                ..Default::default()
+            },
+            source: src,
+            destination: dst,
+            ..Default::default()
+        };
+        let pod = || ep("monitoring/vmagent-x2k4q", 40000, "10.0.2.5");
+        s.ingest(flow(pod(), ep("reserved:kube-apiserver", 7, "192.168.10.10")));
+        // The node that saw it, which has no CiliumNode yet.
+        s.ingest(flow(ep("reserved:host", 1, "10.0.2.1"), pod()));
+        s.ingest(flow(pod(), ep("reserved:remote-node", 6, "192.168.20.1")));
+        let flows = s.recent_flows(10, None);
+        let ids: Vec<_> = flows.iter().map(|f| (f.source.as_str(), f.destination.as_str())).collect();
+        assert_eq!(
+            ids,
+            [
+                ("monitoring/vmagent-x2k4q", "node:cp-1"),
+                ("node:worker-2", "monitoring/vmagent-x2k4q"),
+                ("monitoring/vmagent-x2k4q", "reserved:remote-node"),
+            ]
+        );
+        // The full record keeps what Hubble said: identity and address.
+        let d = s.flow_detail(flows[0].id).unwrap();
+        assert_eq!((d.destination.id.as_str(), d.destination.identity), ("node:cp-1", 7));
+
+        s.flows.lock().unwrap().tick();
+        let g = s.build_graph();
+        let node = |id: &str| g.nodes.iter().find(|n| n.id == id).unwrap();
+        assert_eq!(
+            (node("node:cp-1").workload.as_str(), node("node:cp-1").ip.as_str()),
+            ("control-plane", "192.168.10.10")
+        );
+        // Known nodes are on the map without traffic too.
+        assert_eq!(node("node:worker-1").namespace, common::CLUSTER_GROUP);
+        assert_eq!(node("node:worker-2").workload, "node");
+        assert_eq!(node("reserved:remote-node").namespace, common::CLUSTER_GROUP);
     }
 
     #[test]

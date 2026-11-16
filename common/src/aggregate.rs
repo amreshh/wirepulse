@@ -1,6 +1,6 @@
 //! Collapse the pod-level graph into namespace or workload level.
 
-use crate::model::{Graph, Node, NodeKind, EXTERNAL_GROUP};
+use crate::model::{entity_group, node_of, Graph, Node, NodeKind, ROLE_NODE};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,7 +25,9 @@ impl Level {
 pub struct AggNode {
     pub id: String,
     pub label: String,
-    /// Group the node is drawn in (its namespace, or [`EXTERNAL_GROUP`]).
+    /// Group the node is drawn in: its namespace, or for other nodes
+    /// [`CLUSTER_GROUP`](crate::CLUSTER_GROUP) or
+    /// [`EXTERNAL_GROUP`](crate::EXTERNAL_GROUP).
     pub group: String,
     pub kind: NodeKind,
     /// What the node is, for its icon: `Deployment`, `StatefulSet`,
@@ -91,6 +93,8 @@ pub fn kind_of_workload(workload: &str) -> &str {
 
 fn kind_for(node: &Node, level: Level) -> String {
     match (node.kind, level) {
+        // The entity's name, or a Kubernetes node's role.
+        (NodeKind::External, _) if !node.workload.is_empty() => node.workload.clone(),
         (NodeKind::External, _) => node.name.clone(),
         (_, Level::Namespace) => "Namespace".into(),
         _ => kind_of_workload(&node.workload).into(),
@@ -119,7 +123,7 @@ pub fn aggregate(graph: &Graph, level: Level) -> AggGraph {
     for n in &graph.nodes {
         let gid = group_id(n, level);
         member_of.insert(n.id.as_str(), gid.clone());
-        let group = if n.kind == NodeKind::External { EXTERNAL_GROUP.to_string() } else { n.namespace.clone() };
+        let group = if n.kind == NodeKind::External { entity_group(&n.id).to_string() } else { n.namespace.clone() };
         let e = nodes.entry(gid.clone()).or_insert_with(|| AggNode {
             id: gid,
             label: label_for(n, level),
@@ -144,7 +148,7 @@ pub fn aggregate(graph: &Graph, level: Level) -> AggGraph {
         // Unknown endpoint: keep it at its own id, guess the namespace.
         let (group, label, kind) = match id.split_once('/') {
             Some((ns, name)) => (ns.to_string(), name.to_string(), NodeKind::Pod),
-            None => (EXTERNAL_GROUP.to_string(), id.to_string(), NodeKind::External),
+            None => (entity_group(id).to_string(), node_of(id).unwrap_or(id).to_string(), NodeKind::External),
         };
         let gid = match (level, kind) {
             (Level::Namespace, NodeKind::Pod) => format!("ns:{group}"),
@@ -156,6 +160,7 @@ pub fn aggregate(graph: &Graph, level: Level) -> AggGraph {
             group,
             kind,
             workload_kind: match (kind, level) {
+                (NodeKind::External, _) if node_of(id).is_some() => ROLE_NODE.into(),
                 (NodeKind::External, _) => id.strip_prefix("reserved:").unwrap_or(id).to_string(),
                 (_, Level::Namespace) => "Namespace".into(),
                 _ => "Pod".into(),
@@ -241,7 +246,7 @@ pub fn aggregate(graph: &Graph, level: Level) -> AggGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Edge;
+    use crate::model::{Edge, CLUSTER_GROUP, EXTERNAL_GROUP};
 
     fn pod(ns: &str, name: &str, wl: &str) -> Node {
         Node {
@@ -293,6 +298,7 @@ mod tests {
                 edge("shop/fe-1", "pay/api-1", 1.0),
                 edge("pay/api-1", "reserved:world", 0.5),
                 edge("gone/old-pod", "shop/db-0", 0.25),
+                edge("shop/fe-1", "reserved:kube-apiserver", 0.1),
             ],
             generated_at_ms: 0,
         }
@@ -301,9 +307,49 @@ mod tests {
     #[test]
     fn pod_level_keeps_everything() {
         let g = aggregate(&sample(), Level::Pod);
-        // 5 known nodes + 1 unknown referenced by an edge
-        assert_eq!(g.nodes.len(), 6);
-        assert_eq!(g.edges.len(), 5);
+        // 5 known nodes + 2 only referenced by an edge
+        assert_eq!(g.nodes.len(), 7);
+        assert_eq!(g.edges.len(), 6);
+    }
+
+    #[test]
+    fn kubernetes_nodes_keep_their_name_and_role() {
+        let mut g = sample();
+        g.nodes.push(Node {
+            id: "node:cp-1".into(),
+            kind: NodeKind::External,
+            namespace: CLUSTER_GROUP.into(),
+            name: "cp-1".into(),
+            workload: crate::model::ROLE_CONTROL_PLANE.into(),
+            node_name: "cp-1".into(),
+            ip: "192.168.10.10".into(),
+            phase: String::new(),
+        });
+        g.edges.push(edge("shop/fe-1", "node:cp-1", 0.2));
+        // Only in an edge: the server had no CiliumNode for it.
+        g.edges.push(edge("node:worker-9", "shop/fe-1", 0.2));
+        for level in [Level::Pod, Level::Workload, Level::Namespace] {
+            let a = aggregate(&g, level);
+            let cp = a.node("node:cp-1").unwrap();
+            assert_eq!((cp.label.as_str(), cp.workload_kind.as_str()), ("cp-1", "control-plane"));
+            assert_eq!((cp.group.as_str(), cp.kind), (CLUSTER_GROUP, NodeKind::External));
+            let w = a.node("node:worker-9").unwrap();
+            assert_eq!(
+                (w.label.as_str(), w.workload_kind.as_str(), w.group.as_str()),
+                ("worker-9", "node", CLUSTER_GROUP)
+            );
+        }
+    }
+
+    #[test]
+    fn only_world_is_grouped_outside_the_cluster() {
+        for level in [Level::Pod, Level::Workload, Level::Namespace] {
+            let g = aggregate(&sample(), level);
+            assert_eq!(g.node("reserved:world").unwrap().group, EXTERNAL_GROUP);
+            let api = g.node("reserved:kube-apiserver").unwrap();
+            assert_eq!((api.group.as_str(), api.kind), (CLUSTER_GROUP, NodeKind::External));
+            assert_eq!(api.workload_kind, "kube-apiserver");
+        }
     }
 
     #[test]

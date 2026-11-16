@@ -19,6 +19,9 @@
 //!
 //! `label=` takes Cilium labels (`k8s:app=web`, `reserved:world`) or plain
 //! Kubernetes ones (`app=web`); `label=app` only checks the key exists.
+//! `pod=` matches a prefix of the pod's name, except for a node
+//! (`pod=node:worker-1`), which needs the whole name or a `*` glob: node
+//! names are numbered, and `worker-1` shouldn't also find `worker-10`.
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -362,7 +365,9 @@ fn endpoint_matches(kind: &Kind, e: &EndpointRef) -> bool {
     match kind {
         Kind::Label { key, value } => label_matches(key, value.as_deref(), e.labels),
         Kind::Pod(p) => {
-            if p.contains('/') || p.starts_with("reserved:") {
+            if p.starts_with(crate::model::NODE_PREFIX) {
+                glob(p, e.id)
+            } else if p.contains('/') || p.starts_with("reserved:") {
                 e.id.starts_with(p.as_str()) || glob(p, e.id)
             } else {
                 e.pod().starts_with(p.as_str()) || glob(p, e.pod())
@@ -518,6 +523,17 @@ mod tests {
         assert!(Filter::parse("to:dns=api.stripe.com").matches_flow(&f));
         assert!(!Filter::parse("dns=*.example.com").matches_flow(&f));
         assert!(Filter::parse("pod=reserved:world").matches_flow(&f));
+    }
+
+    #[test]
+    fn nodes_match_their_whole_name() {
+        let none: Vec<String> = vec![];
+        let node = |id| EndpointRef { id, labels: &none, ..Default::default() };
+        let one = Filter::parse("pod=node:worker-1");
+        assert!(one.matches_endpoint(&node("node:worker-1")));
+        assert!(!one.matches_endpoint(&node("node:worker-10")));
+        assert!(Filter::parse("pod=node:worker-*").matches_endpoint(&node("node:worker-10")));
+        assert!(!Filter::parse("pod=node:worker-*").matches_endpoint(&node("node:cp-1")));
     }
 
     #[test]

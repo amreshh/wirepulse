@@ -1,8 +1,71 @@
 use serde::{Deserialize, Serialize};
 
-/// Pseudo-namespace used to group endpoints that are not pods
-/// (world, host, remote-node, kube-apiserver, ...).
+/// Pseudo-namespace for `world`: everything outside the cluster.
 pub const EXTERNAL_GROUP: &str = "(external)";
+
+/// Pseudo-namespace for the endpoints that are part of the cluster but not
+/// pods: its nodes, the API server, Cilium's own endpoints (`health`,
+/// `ingress`), and pods nobody could name.
+pub const CLUSTER_GROUP: &str = "(cluster)";
+
+/// Id prefix of a Kubernetes node on the map: `node:<name>`. The server
+/// names the node behind Cilium's `host`, `remote-node` and `kube-apiserver`
+/// identities by its IP.
+pub const NODE_PREFIX: &str = "node:";
+
+pub fn node_id(name: &str) -> String {
+    format!("{NODE_PREFIX}{name}")
+}
+
+/// The node name in a `node:<name>` id.
+pub fn node_of(id: &str) -> Option<&str> {
+    id.strip_prefix(NODE_PREFIX)
+}
+
+/// [`Node::workload`] of a Kubernetes node: its role.
+pub const ROLE_NODE: &str = "node";
+pub const ROLE_CONTROL_PLANE: &str = "control-plane";
+
+/// Group a non-pod endpoint is drawn in. Cilium calls all of them reserved
+/// entities, but only `world` is outside the cluster.
+pub fn entity_group(id: &str) -> &'static str {
+    if id == "reserved:world" {
+        EXTERNAL_GROUP
+    } else {
+        CLUSTER_GROUP
+    }
+}
+
+/// Whether a group is one of the pseudo-namespaces of non-pod endpoints.
+pub fn is_entity_group(group: &str) -> bool {
+    group == EXTERNAL_GROUP || group == CLUSTER_GROUP
+}
+
+/// What a non-pod endpoint is, in a few words, for the map. `kind` is its
+/// [`Node::workload`] (for a node, its role).
+pub fn entity_description(id: &str, kind: &str) -> &'static str {
+    if is_unresolved(id) {
+        return "pod not known";
+    }
+    if node_of(id).is_some() {
+        return if kind == ROLE_CONTROL_PLANE { "control-plane node" } else { "node" };
+    }
+    // The rest of Cilium's node entities are addresses the server could not
+    // tie to a node (one in another cluster of a mesh, say).
+    match id.strip_prefix("reserved:").unwrap_or(id) {
+        "world" => "outside the cluster",
+        // The node that saw the flow, and its host-network pods.
+        "host" => "local node",
+        "remote-node" => "other nodes",
+        // An API server that isn't on a node, such as a managed control plane.
+        "kube-apiserver" => "control plane",
+        "health" => "Cilium health checks",
+        "ingress" => "Cilium ingress",
+        "init" => "identity not known yet",
+        "unmanaged" => "not managed by Cilium",
+        _ => "Cilium entity",
+    }
+}
 
 /// An endpoint Hubble reported without a pod, which the server couldn't name
 /// either: `identity:N`, `<namespace>/identity:N` (in a known namespace), or
@@ -14,17 +77,20 @@ pub fn is_unresolved(id: &str) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NodeKind {
     Pod,
-    /// Cilium reserved identity or anything outside the cluster.
+    /// Not a pod: a Kubernetes node, a Cilium reserved entity (`world`,
+    /// `health`, ...) or an endpoint nobody could name. Most of them are in
+    /// the cluster; [`entity_group`] says which.
     External,
 }
 
-/// One endpoint on the map: a pod, or a reserved entity such as `world`.
+/// One endpoint on the map: a pod, a node, or a reserved entity such as `world`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Node {
-    /// `namespace/pod` for pods, `reserved:<entity>` for reserved identities.
+    /// `namespace/pod` for pods, `node:<name>` for nodes, `reserved:<entity>`
+    /// for reserved identities.
     pub id: String,
     pub kind: NodeKind,
-    /// Kubernetes namespace; [`EXTERNAL_GROUP`] for external nodes.
+    /// Kubernetes namespace; [`entity_group`] for the other nodes.
     pub namespace: String,
     pub name: String,
     /// Owning workload, e.g. `Deployment/frontend`. Falls back to the pod name.
@@ -404,5 +470,27 @@ mod tests {
         assert!(is_unresolved("unknown"));
         assert!(!is_unresolved("flux-system/helm-controller-5d8f-x2k4q"));
         assert!(!is_unresolved("reserved:world"));
+    }
+
+    #[test]
+    fn only_world_is_outside_the_cluster() {
+        assert_eq!(entity_group("reserved:world"), EXTERNAL_GROUP);
+        for id in ["reserved:host", "reserved:remote-node", "reserved:kube-apiserver", "reserved:health", "unknown"] {
+            assert_eq!(entity_group(id), CLUSTER_GROUP, "{id}");
+        }
+        assert_eq!(entity_description("reserved:world", "world"), "outside the cluster");
+        assert_eq!(entity_description("reserved:kube-apiserver", "kube-apiserver"), "control plane");
+        assert_eq!(entity_description("identity:65478", ""), "pod not known");
+    }
+
+    #[test]
+    fn nodes() {
+        assert_eq!(node_id("cp-1"), "node:cp-1");
+        assert_eq!(node_of("node:cp-1"), Some("cp-1"));
+        assert_eq!(node_of("kube-system/node-exporter-x2k4q"), None);
+        assert_eq!(entity_group("node:cp-1"), CLUSTER_GROUP);
+        assert!(!is_unresolved("node:cp-1"));
+        assert_eq!(entity_description("node:cp-1", ROLE_CONTROL_PLANE), "control-plane node");
+        assert_eq!(entity_description("node:worker-1", ROLE_NODE), "node");
     }
 }

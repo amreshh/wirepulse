@@ -11,7 +11,7 @@ use crate::settings::{EdgeStyle, LabelMode};
 use crate::util::{fmt_rate, hue, window};
 use common::aggregate::{AggEdge, AggGraph, AggNode, Level};
 use common::layout::{layout, Arrangement, Layout, LayoutStyle, Placed, IDLE_GROUP};
-use common::{is_unresolved, NodeKind};
+use common::{entity_description, is_entity_group, NodeKind};
 use leptos::prelude::*;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -508,7 +508,7 @@ impl Scene {
     fn draw_groups(&self, s: f64) {
         let c = &self.ctx;
         for g in &self.layout.groups {
-            let neutral = g.name == common::EXTERNAL_GROUP || g.name == IDLE_GROUP;
+            let neutral = is_entity_group(&g.name) || g.name == IDLE_GROUP;
             let hue = hue(&g.name);
             c.begin_path();
             if g.rect {
@@ -793,8 +793,7 @@ impl Scene {
         let _ = c.fill_text(&title, tx, p.y - 2.0);
 
         let mut sub = match (n.kind, self.level()) {
-            (NodeKind::External, _) if is_unresolved(&n.id) => "pod not known".to_string(),
-            (NodeKind::External, _) => "outside the cluster".to_string(),
+            (NodeKind::External, _) => entity_description(&n.id, &n.workload_kind).to_string(),
             (_, Level::Namespace) => format!("{} pods", n.members),
             _ if self.input.style.arrangement == Arrangement::Layered => {
                 if n.members > 1 {
@@ -831,12 +830,16 @@ impl Scene {
         let _ = c.set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0);
 
         let mut lines = vec![n.label.clone()];
-        let mut kind = n.workload_kind.clone();
+        let mut kind = match n.kind {
+            // The label already names the entity; say what it is.
+            NodeKind::External => entity_description(&n.id, &n.workload_kind).to_string(),
+            NodeKind::Pod => n.workload_kind.clone(),
+        };
         if n.members > 1 {
             kind = format!("{kind} · {} pods", n.members);
         }
         lines.push(kind);
-        if n.group != common::EXTERNAL_GROUP && self.level() != Level::Namespace {
+        if !is_entity_group(&n.group) && self.level() != Level::Namespace {
             lines.push(format!("namespace {}", n.group));
         }
         lines.push(format!("in {} · out {}", fmt_rate(n.flows_in), fmt_rate(n.flows_out)));

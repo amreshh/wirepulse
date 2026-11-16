@@ -45,9 +45,14 @@ fn candidates(ctx: Ctx, kind: &str) -> BTreeSet<String> {
         "ns" | "namespace" => ctx.graph.with(|g| {
             out.extend(g.nodes.iter().filter(|n| n.kind == common::NodeKind::Pod).map(|n| n.namespace.clone()))
         }),
-        "workload" | "wl" => ctx
-            .graph
-            .with(|g| out.extend(g.nodes.iter().map(|n| n.workload.rsplit('/').next().unwrap_or("").to_string()))),
+        "workload" | "wl" => ctx.graph.with(|g| {
+            out.extend(
+                g.nodes
+                    .iter()
+                    .filter(|n| n.kind == common::NodeKind::Pod)
+                    .map(|n| n.workload.rsplit('/').next().unwrap_or("").to_string()),
+            )
+        }),
         "dns" | "fqdn" => {
             ctx.store.with(|s| out.extend(s.all().iter().filter(|e| !e.dst_dns.is_empty()).map(|e| e.dst_dns.clone())))
         }
@@ -354,6 +359,12 @@ pub fn FilterBar() -> impl IntoView {
                             <code>"ns=shop"</code>
                         </td>
                         <td>"pod name prefix ("<code>"pod=ns/name"</code>" too), namespace"</td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <code>"pod=node:cp-1"</code>
+                        </td>
+                        <td>"a node by its whole name, "<code>"*"</code>" wildcards"</td>
                     </tr>
                     <tr>
                         <td>
