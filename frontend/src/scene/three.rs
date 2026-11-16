@@ -13,7 +13,7 @@ use crate::settings::LabelMode;
 use crate::util::hue;
 use common::aggregate::Level;
 use common::layout::{Arrangement, IDLE_GROUP};
-use common::{NodeKind, EXTERNAL_GROUP};
+use common::{is_entity_group, NodeKind};
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 
@@ -73,9 +73,9 @@ impl Scene {
         self.pos3.clear();
         self.plates.clear();
         if self.tower_active() {
-            // Floors in name order; external and idle groups on top.
+            // Floors in name order; (cluster), (external) and idle groups on top.
             let mut groups: Vec<_> = self.layout.groups.iter().collect();
-            groups.sort_by_key(|g| (g.name == EXTERNAL_GROUP || g.name == IDLE_GROUP, g.name.clone()));
+            groups.sort_by_key(|g| (is_entity_group(&g.name) || g.name == IDLE_GROUP, g.name.clone()));
             let span = groups.iter().map(|g| g.w.max(g.h)).fold(0.0, f64::max);
             let tier = (span * 0.38).clamp(90.0, 420.0);
             let mut floor_of: HashMap<&str, (f64, f64, f64)> = HashMap::new();
@@ -422,7 +422,7 @@ impl Scene {
             };
             let pts: Option<Vec<Projected>> = outline.iter().map(|q| self.project(*q)).collect();
             let Some(pts) = pts else { continue };
-            let neutral = p.name == EXTERNAL_GROUP || p.name == IDLE_GROUP;
+            let neutral = is_entity_group(&p.name) || p.name == IDLE_GROUP;
             let h = hue(&p.name);
             c.set_global_alpha(fog(depth));
             c.begin_path();

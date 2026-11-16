@@ -11,7 +11,8 @@ pub fn key(kind: &str) -> &'static str {
         "CronJob" => "CronJob",
         "Namespace" => "Namespace",
         "world" => "world",
-        "host" | "remote-node" => "host",
+        // Kubernetes nodes have their role as their kind.
+        "host" | "remote-node" | "node" | "control-plane" => "host",
         "kube-apiserver" => "kube-apiserver",
         "ingress" => "ingress",
         "health" => "health",

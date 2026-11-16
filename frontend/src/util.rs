@@ -33,7 +33,7 @@ pub fn short_name(id: &str) -> &str {
     if let Some(r) = id.strip_prefix("reserved:") {
         return r;
     }
-    if let Some(r) = id.strip_prefix("ns:") {
+    if let Some(r) = id.strip_prefix("ns:").or_else(|| common::node_of(id)) {
         return r;
     }
     id.rsplit_once('/').map_or(id, |(_, n)| n)
@@ -116,5 +116,13 @@ mod tests {
         assert_eq!(fmt_thousands(800), "800");
         assert_eq!(fmt_thousands(5000), "5k");
         assert_eq!(fmt_thousands(2500), "2.5k");
+    }
+
+    #[test]
+    fn names() {
+        assert_eq!(short_name("shop/cart-7d9f8b6c5d-x2k4q"), "cart-7d9f8b6c5d-x2k4q");
+        assert_eq!(short_name("reserved:world"), "world");
+        assert_eq!(short_name("node:cp-1"), "cp-1");
+        assert_eq!(namespace_of("node:cp-1"), "");
     }
 }

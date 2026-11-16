@@ -13,7 +13,7 @@
 //!   that follows the direction of traffic
 
 use crate::aggregate::{AggGraph, AggNode, Level};
-use crate::model::{NodeKind, EXTERNAL_GROUP};
+use crate::model::{is_entity_group, NodeKind};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
@@ -289,7 +289,8 @@ fn grouped(g: &AggGraph, level: Level, aspect: f64, style: LayoutStyle) -> Layou
     let container = style.effective_container();
     let mut by_group: BTreeMap<(bool, String), Vec<&AggNode>> = BTreeMap::new();
     for n in &g.nodes {
-        let is_ext = n.group == EXTERNAL_GROUP;
+        // Namespaces first, then (cluster) and (external).
+        let is_ext = is_entity_group(&n.group);
         by_group.entry((is_ext, n.group.clone())).or_default().push(n);
     }
 

@@ -48,10 +48,16 @@
 
 - Every namespace and pod in the cluster on one canvas, at three zoom levels:
   **namespaces**, **workloads** and **pods**.
-- Connections show live Hubble flow rates; drops are red. Traffic to and from
-  outside the cluster (world, host, kube-apiserver) is grouped separately.
+- Connections show live Hubble flow rates; drops are red. Endpoints that aren't
+  pods are grouped separately: the cluster's nodes and Cilium's own endpoints
+  under *(cluster)*, and only world under *(external)*.
+- Nodes by name: Hubble calls a node's addresses host, remote-node or
+  kube-apiserver depending on where it saw the flow, and the API server's
+  node gets kube-apiserver for its kubelet and metrics ports too. wirepulse
+  looks the address up in the CiliumNodes and shows the node, e.g. `cp-1`
+  (control-plane node) receiving 6443 and 10250.
 - Every node has an icon for what it is: Deployment, StatefulSet, DaemonSet,
-  Job, CronJob, standalone Pod, world, host, API server.
+  Job, CronJob, standalone Pod, world, node, API server.
 - Click a node for its connections, ports and rates, and the policies that
   select it.
 - **View** menu, remembered per browser: presets *Bubbles*, *Boxes*,
@@ -203,6 +209,7 @@ Everything it needs is read-only (see `deploy/wirepulse.yaml`):
 
 - `pods`, `namespaces`: get/list/watch (the map inventory)
 - `ciliumendpoints`, `ciliumendpointslices`: get/list/watch (the Endpoints tab)
+- `ciliumnodes`: get/list/watch (names the nodes on the map)
 - `ciliumnetworkpolicies`, `ciliumclusterwidenetworkpolicies`,
   `networkpolicies`, `ciliumnodeconfigs`: get/list
 - the single `kube-system/cilium-config` ConfigMap: get

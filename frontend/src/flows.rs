@@ -10,7 +10,7 @@ use crate::util::{fmt_count, fmt_thousands, fmt_time, get_json, namespace_of, sh
 use crate::widgets::{grip, Dropdown, SidePanel};
 use common::aggregate::kind_of_workload;
 use common::filter::{EndpointRef, Filter, FlowRef};
-use common::{is_unresolved, EndpointDetail, FlowDetail, FlowEvent, Verdict};
+use common::{is_unresolved, node_of, EndpointDetail, FlowDetail, FlowEvent, Verdict, ROLE_NODE};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use std::collections::{HashSet, VecDeque};
@@ -272,6 +272,9 @@ fn kind_for_endpoint(id: &str, workload: &str) -> String {
     if let Some(e) = id.strip_prefix("reserved:") {
         return e.to_string();
     }
+    if node_of(id).is_some() {
+        return ROLE_NODE.into();
+    }
     // Without a pod; the workload is often still known from its identity.
     if is_unresolved(id) && workload.is_empty() {
         return "unknown".into();
@@ -280,7 +283,8 @@ fn kind_for_endpoint(id: &str, workload: &str) -> String {
 }
 
 fn endpoint_cell(ctx: Ctx, id: String, workload: String, extra: String) -> impl IntoView {
-    let ns = namespace_of(&id).to_string();
+    // Under the name: a pod's namespace, or that it's a node.
+    let ns = if node_of(&id).is_some() { ROLE_NODE } else { namespace_of(&id) }.to_string();
     let name = short_name(&id).to_string();
     let icon = icons::svg(&kind_for_endpoint(&id, &workload));
     view! {

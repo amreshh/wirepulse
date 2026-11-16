@@ -15,7 +15,7 @@ use crate::widgets::{grip, Dropdown, MIN_PANEL};
 use common::aggregate::{aggregate, group_id, AggEdge, AggGraph, Level};
 use common::filter::{EndpointRef, Filter, FlowRef};
 use common::layout::{Arrangement, Container, NodeStyle};
-use common::{is_unresolved, Graph, Node, NodeKind, PolicyInfo};
+use common::{is_unresolved, node_of, Graph, Node, NodeKind, PolicyInfo};
 use leptos::prelude::*;
 use send_wrapper::SendWrapper;
 use std::borrow::Cow;
@@ -492,7 +492,7 @@ fn preset_svg(name: &str) -> &'static str {
 
 /// Filter that selects this map node's traffic.
 fn flow_filter_for(id: &str, level: Level, label: &str, group: &str) -> String {
-    if id.starts_with("reserved:") {
+    if id.starts_with("reserved:") || node_of(id).is_some() {
         return format!("pod={id}");
     }
     if id.starts_with("identity:") {
@@ -550,7 +550,7 @@ fn Details(agg: Memo<AggGraph>) -> impl IntoView {
                                 {if node.kind == NodeKind::External && is_unresolved(&node.id) {
                                     "pod not known: Hubble reported only its identity".to_string()
                                 } else if node.kind == NodeKind::External {
-                                    "outside the cluster".to_string()
+                                    common::entity_description(&node.id, &node.workload_kind).to_string()
                                 } else if level == Level::Namespace {
                                     "namespace".to_string()
                                 } else {
@@ -591,16 +591,17 @@ fn Details(agg: Memo<AggGraph>) -> impl IntoView {
                         })}
                     {single
                         .map(|p| {
-                            view! {
-                                <span>"workload"</span>
-                                <b>{p.workload}</b>
-                                <span>"node"</span>
-                                <b>{p.node_name}</b>
-                                <span>"IP"</span>
-                                <b>{p.ip}</b>
-                                <span>"phase"</span>
-                                <b>{p.phase}</b>
-                            }
+                            let workload = if p.kind == NodeKind::Pod { p.workload } else { String::new() };
+                            [("workload", workload), ("node", p.node_name), ("IP", p.ip), ("phase", p.phase)]
+                                .into_iter()
+                                .filter(|(_, v)| !v.is_empty())
+                                .map(|(k, v)| {
+                                    view! {
+                                        <span>{k}</span>
+                                        <b>{v}</b>
+                                    }
+                                })
+                                .collect_view()
                         })}
                 </div>
                 <button
@@ -976,6 +977,9 @@ fn ConnectionsTable(
 fn agg_kind(ctx: Ctx, id: &str) -> String {
     if let Some(e) = id.strip_prefix("reserved:") {
         return e.to_string();
+    }
+    if node_of(id).is_some() {
+        return common::ROLE_NODE.into();
     }
     if id.starts_with("ns:") {
         return "Namespace".into();

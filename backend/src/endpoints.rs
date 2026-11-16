@@ -41,7 +41,7 @@ pub async fn refresh_loop(client: Client, state: Arc<AppState>) {
     loop {
         tick.tick().await;
         if endpoints.is_none() {
-            endpoints = Watched::start(&client, "CiliumEndpoint", &["v2"]).await;
+            endpoints = Watched::start(&client, "CiliumEndpoint", &["v2"], |_| {}).await;
         }
         let watching = endpoints.is_some();
         match objects(&mut endpoints) {
@@ -58,7 +58,7 @@ pub async fn refresh_loop(client: Client, state: Arc<AppState>) {
             _ => {}
         }
         if slices.is_none() {
-            slices = Watched::start(&client, "CiliumEndpointSlice", &["v2", "v2alpha1"]).await;
+            slices = Watched::start(&client, "CiliumEndpointSlice", &["v2", "v2alpha1"], |_| {}).await;
         }
         let watching = slices.is_some();
         match objects(&mut slices) {
@@ -78,7 +78,7 @@ pub async fn refresh_loop(client: Client, state: Arc<AppState>) {
 }
 
 /// One kind of object, kept in memory and up to date by a kube-rs reflector.
-struct Watched {
+pub(crate) struct Watched {
     store: Store<DynamicObject>,
     /// Set when the watch stopped on an error (e.g. RBAC doesn't allow
     /// `watch`). The next round starts a new one, which lists everything again.
@@ -95,7 +95,13 @@ impl Drop for Watched {
 impl Watched {
     /// Watches `kind` (group `cilium.io`) in the first of `versions` the API
     /// server has. `None` when it has none of them, or they can't be listed.
-    async fn start(client: &Client, kind: &'static str, versions: &[&str]) -> Option<Self> {
+    /// `slim` drops what the caller doesn't read before an object is cached.
+    pub(crate) async fn start(
+        client: &Client,
+        kind: &'static str,
+        versions: &[&str],
+        slim: fn(&mut DynamicObject),
+    ) -> Option<Self> {
         for version in versions {
             let ar = ApiResource::from_gvk(&GroupVersionKind::gvk("cilium.io", version, kind));
             let api: Api<DynamicObject> = Api::all_with(client.clone(), &ar);
@@ -118,6 +124,7 @@ impl Watched {
                 .modify(move |o: &mut DynamicObject| {
                     o.types = Some(types.clone());
                     o.metadata.managed_fields = None;
+                    slim(o);
                 })
                 .reflect(writer);
             let failed = Arc::new(AtomicBool::new(false));
@@ -146,7 +153,7 @@ impl Watched {
 /// The objects in `slot`'s watch, once its first list has arrived. A watch
 /// that failed gets this last look, then is dropped so the next round starts
 /// a new one.
-fn objects(slot: &mut Option<Watched>) -> Option<Vec<Arc<DynamicObject>>> {
+pub(crate) fn objects(slot: &mut Option<Watched>) -> Option<Vec<Arc<DynamicObject>>> {
     let w = slot.as_ref()?;
     let listed = w.store.wait_until_ready().now_or_never().is_some_and(|r| r.is_ok());
     let objects = listed.then(|| w.store.state());
