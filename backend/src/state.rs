@@ -1,6 +1,7 @@
 //! Shared in-memory state. Nothing is persisted: the server only keeps the
 //! current inventory, edge rates and a short buffer of recent flows.
 
+use crate::endpoints::EndpointObject;
 use crate::flows::FlowAggregator;
 use common::{
     ConfigView, EndpointsView, FlowDetail, FlowEvent, Graph, Info, Node, NodeKind, PolicyInfo, ServerMsg, Status,
@@ -43,8 +44,9 @@ pub struct AppState {
     pub policies: RwLock<Vec<PolicyInfo>>,
     pub config: RwLock<ConfigView>,
     pub endpoints: RwLock<EndpointsView>,
-    /// Raw objects behind `endpoints`, for the YAML view.
-    pub endpoint_raw: RwLock<HashMap<String, serde_json::Value>>,
+    /// The objects behind `endpoints`, by endpoint id, for the YAML view.
+    /// They're the watches' cached objects, not copies.
+    pub endpoint_objects: RwLock<HashMap<String, EndpointObject>>,
     latest_graph: RwLock<Arc<str>>,
     pub tx: broadcast::Sender<Arc<str>>,
 }
@@ -89,7 +91,7 @@ impl AppState {
             policies: RwLock::default(),
             config: RwLock::default(),
             endpoints: RwLock::default(),
-            endpoint_raw: RwLock::default(),
+            endpoint_objects: RwLock::default(),
             latest_graph: RwLock::new(encode(&ServerMsg::Graph(Graph::default()))),
             tx,
         })

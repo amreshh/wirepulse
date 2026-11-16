@@ -34,9 +34,11 @@ rules:
       - ciliumnetworkpolicies
       - ciliumclusterwidenetworkpolicies
       - ciliumnodeconfigs
-      - ciliumendpoints
-      - ciliumendpointslices
     verbs: ["get", "list"]
+  # Watched: the API server sends what changes, not every endpoint each time.
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumendpoints", "ciliumendpointslices"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -97,6 +99,10 @@ spec:
       serviceAccountName: wirepulse
       securityContext:
         runAsNonRoot: true
+        # The image's nonroot user and group, by number, so the kubelet can
+        # check that it isn't root.
+        runAsUser: 65532
+        runAsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:

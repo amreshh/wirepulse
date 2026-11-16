@@ -15,6 +15,12 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
+// The image's static (musl) build. musl's own allocator takes one lock for
+// every allocation, which is slow with tokio's worker threads all allocating.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Live Cilium/Hubble UI: global service map, flows, policies and config.
 #[derive(Parser, Debug)]
 #[command(version, about)]

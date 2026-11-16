@@ -30,6 +30,10 @@ tower-http = { version = "0.7", features = ["fs", "trace", "compression-gzip"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# The image's static (musl) build: see the allocator in src/main.rs.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = "0.1"
+
 [build-dependencies]
 protox = "0.10"
 tonic-prost-build = "0.14"

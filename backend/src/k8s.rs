@@ -3,7 +3,7 @@
 use crate::state::{AppState, Inventory};
 use common::{Node, NodeKind};
 use futures::{Stream, StreamExt};
-use k8s_openapi::api::core::v1::{Namespace, Pod};
+use k8s_openapi::api::core::v1::{Namespace, Pod, PodSpec, PodStatus};
 use kube::runtime::{reflector, watcher, WatchStreamExt};
 use kube::{Api, Client, Resource, ResourceExt};
 use std::collections::{BTreeMap, HashMap};
@@ -12,16 +12,25 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 
+/// Pods that haven't finished: completed ones aren't on the map (see
+/// `pod_node`), so the API server can leave them out.
+const UNFINISHED_PODS: &str = "status.phase!=Succeeded,status.phase!=Failed";
+
 pub async fn run_inventory(client: Client, state: Arc<AppState>) {
     let (pods, pods_w) = reflector::store::<Pod>();
     let (nss, nss_w) = reflector::store::<Namespace>();
 
-    let pod_stream = watcher(Api::<Pod>::all(client.clone()), watcher::Config::default())
+    let pod_stream = watcher(Api::<Pod>::all(client.clone()), watcher::Config::default().fields(UNFINISHED_PODS))
         .default_backoff()
+        .modify(slim_pod)
         .reflect(pods_w)
         .applied_objects();
     let ns_stream = watcher(Api::<Namespace>::all(client), watcher::Config::default())
         .default_backoff()
+        .modify(|ns| {
+            ns.metadata.managed_fields = None;
+            ns.metadata.annotations = None;
+        })
         .reflect(nss_w)
         .applied_objects();
     tokio::spawn(drain(pod_stream, "pods", state.clone()));
@@ -59,6 +68,21 @@ where
             }
         }
     }
+}
+
+/// Keeps only what the inventory reads: labels, owners, node, service
+/// account, phase and IP. Every pod in the cluster is held in memory, and the
+/// rest (managedFields, annotations, container specs and statuses) is most of
+/// a pod's size.
+fn slim_pod(p: &mut Pod) {
+    p.metadata.managed_fields = None;
+    p.metadata.annotations = None;
+    p.spec = p.spec.take().map(|s| PodSpec {
+        node_name: s.node_name,
+        service_account_name: s.service_account_name,
+        ..PodSpec::default()
+    });
+    p.status = p.status.take().map(|s| PodStatus { phase: s.phase, pod_ip: s.pod_ip, ..PodStatus::default() });
 }
 
 pub fn build_inventory(pods: &[Arc<Pod>], namespaces: &[Arc<Namespace>]) -> Inventory {
@@ -178,5 +202,34 @@ mod tests {
         assert_eq!(l["io.kubernetes.pod.namespace"], "shop");
         assert_eq!(l["io.cilium.k8s.namespace.labels.team"], "core");
         assert_eq!(l["io.cilium.k8s.policy.serviceaccount"], "default");
+    }
+
+    #[test]
+    fn slimmed_pods_give_the_same_inventory() {
+        use k8s_openapi::api::core::v1::{Container, PodCondition};
+        use k8s_openapi::apimachinery::pkg::apis::meta::v1::ManagedFieldsEntry;
+        let mut p = pod("api-5d8f-abcde", "ReplicaSet", "api-5d8f", Some("5d8f"));
+        p.metadata.annotations = Some([("big".to_string(), "x".repeat(10_000))].into());
+        p.metadata.managed_fields = Some(vec![ManagedFieldsEntry::default()]);
+        p.spec = Some(PodSpec {
+            node_name: Some("worker-1".into()),
+            service_account_name: Some("api".into()),
+            containers: vec![Container { name: "api".into(), ..Default::default() }],
+            ..Default::default()
+        });
+        p.status = Some(PodStatus {
+            phase: Some("Running".into()),
+            pod_ip: Some("10.0.1.5".into()),
+            conditions: Some(vec![PodCondition::default()]),
+            ..Default::default()
+        });
+        let before = build_inventory(&[Arc::new(p.clone())], &[]);
+        slim_pod(&mut p);
+        let after = build_inventory(&[Arc::new(p.clone())], &[]);
+        assert_eq!(before.nodes, after.nodes);
+        assert_eq!(before.labels, after.labels);
+        assert_eq!((after.nodes[0].node_name.as_str(), after.nodes[0].ip.as_str()), ("worker-1", "10.0.1.5"));
+        assert!(p.metadata.annotations.is_none() && p.metadata.managed_fields.is_none());
+        assert!(p.spec.unwrap().containers.is_empty());
     }
 }

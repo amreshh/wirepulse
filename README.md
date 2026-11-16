@@ -117,9 +117,9 @@ other sites.
 All read-only (see `deploy/wirepulse.yaml`):
 
 - `pods`, `namespaces`: get/list/watch (the map inventory)
+- `ciliumendpoints`, `ciliumendpointslices`: get/list/watch (the Endpoints tab)
 - `ciliumnetworkpolicies`, `ciliumclusterwidenetworkpolicies`,
-  `networkpolicies`, `ciliumnodeconfigs`, `ciliumendpoints`,
-  `ciliumendpointslices`: get/list
+  `networkpolicies`, `ciliumnodeconfigs`: get/list
 - the single `kube-system/cilium-config` ConfigMap: get
 
 If Kubernetes access fails, the map still works from flows alone.

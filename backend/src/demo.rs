@@ -9,6 +9,7 @@ use crate::{config, endpoints, policy};
 use common::{
     EndpointDetail, FlowDetail, FlowEvent, L7Detail, Node, NodeConfigOverride, NodeKind, PolicyKind, Verdict,
 };
+use kube::api::DynamicObject;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -448,7 +449,10 @@ pub async fn run(state: Arc<AppState>) {
 
 /// `CiliumEndpoint` objects for the demo pods, parsed like real ones.
 /// Ingress/egress enforcement follows the demo policies, as Cilium would.
-fn demo_endpoints(cluster: &Cluster, policies: &[common::PolicyInfo]) -> Vec<(common::EndpointInfo, Value)> {
+fn demo_endpoints(
+    cluster: &Cluster,
+    policies: &[common::PolicyInfo],
+) -> Vec<(common::EndpointInfo, endpoints::EndpointObject)> {
     let mut out = Vec::new();
     for (key, pods) in &cluster.pods {
         let (ns, app) = key.split_once('/').unwrap();
@@ -491,8 +495,9 @@ fn demo_endpoints(cluster: &Cluster, policies: &[common::PolicyInfo]) -> Vec<(co
                     "encryption": {"key": 1}
                 }
             });
-            if let Some(info) = endpoints::parse_cep(&v) {
-                out.push((info, v));
+            let Ok(object) = serde_json::from_value::<DynamicObject>(v) else { continue };
+            if let Some(info) = endpoints::parse_cep(&object) {
+                out.push((info, endpoints::EndpointObject::Endpoint(Arc::new(object))));
             }
         }
     }

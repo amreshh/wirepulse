@@ -22,6 +22,15 @@ const RESUME_OVERLAP_MS: i64 = 2_000;
 const MIN_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
+/// Longest piece of text kept from a flow (an HTTP URL, a DNS name, ...).
+/// Flows can come from any workload in the cluster, and one sending huge URLs
+/// would otherwise fill the server's buffers, and every open browser, with them.
+const MAX_TEXT: usize = 2048;
+/// Longest one-line L7 summary: it goes to the browsers with every flow.
+const MAX_SUMMARY: usize = 512;
+/// Most entries kept from a list in a flow (DNS answers, the names of an IP).
+const MAX_ITEMS: usize = 32;
+
 pub async fn run(addr: String, state: Arc<AppState>) {
     let mut backoff = MIN_BACKOFF;
     loop {
@@ -190,6 +199,23 @@ fn tcp_flags(f: &flow::TcpFlags) -> String {
     .join(" ")
 }
 
+/// `s`, cut to at most `max` bytes (at a character boundary) and marked with an ellipsis.
+fn clip(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
+}
+
+/// The first `MAX_ITEMS` entries of `v`, each clipped to `MAX_TEXT`.
+fn clip_all(v: &[String]) -> Vec<String> {
+    v.iter().take(MAX_ITEMS).map(|s| clip(s, MAX_TEXT)).collect()
+}
+
 fn endpoint_detail(
     ep: Option<&Endpoint>,
     ip: &str,
@@ -207,7 +233,7 @@ fn endpoint_detail(
         port,
         labels: ep.map(|e| e.labels.clone()).unwrap_or_default(),
         service: svc.filter(|s| !s.name.is_empty()).map(|s| format!("{}/{}", s.namespace, s.name)).unwrap_or_default(),
-        names: names.to_vec(),
+        names: clip_all(names),
     }
 }
 
@@ -245,26 +271,26 @@ pub fn convert(f: &flow::Flow) -> FlowDetail {
         match layer.record.as_ref() {
             Some(layer7::Record::Http(h)) => {
                 d.kind = "HTTP".into();
-                d.http_method = h.method.clone();
-                d.http_url = h.url.clone();
+                d.http_method = clip(&h.method, MAX_TEXT);
+                d.http_url = clip(&h.url, MAX_TEXT);
                 d.http_code = h.code;
-                d.http_protocol = h.protocol.clone();
-                l7 = format!("HTTP {} {}", h.method, h.url);
+                d.http_protocol = clip(&h.protocol, MAX_TEXT);
+                l7 = format!("HTTP {} {}", d.http_method, d.http_url);
                 if h.code != 0 {
                     l7.push_str(&format!(" {}", h.code));
                 }
             }
             Some(layer7::Record::Dns(q)) => {
                 d.kind = "DNS".into();
-                d.dns_query = q.query.trim_end_matches('.').to_string();
-                d.dns_ips = q.ips.clone();
+                d.dns_query = clip(q.query.trim_end_matches('.'), MAX_TEXT);
+                d.dns_ips = clip_all(&q.ips);
                 d.dns_rcode = q.rcode;
-                d.dns_qtypes = q.qtypes.clone();
-                d.dns_cnames = q.cnames.clone();
+                d.dns_qtypes = clip_all(&q.qtypes);
+                d.dns_cnames = clip_all(&q.cnames);
                 d.dns_ttl = q.ttl;
                 l7 = format!("DNS {}", d.dns_query);
-                if !q.ips.is_empty() {
-                    l7.push_str(&format!(" → {}", q.ips.join(", ")));
+                if !d.dns_ips.is_empty() {
+                    l7.push_str(&format!(" → {}", d.dns_ips.join(", ")));
                 }
             }
             Some(layer7::Record::Kafka(_)) => {
@@ -273,6 +299,7 @@ pub fn convert(f: &flow::Flow) -> FlowDetail {
             }
             None => {}
         }
+        l7 = clip(&l7, MAX_SUMMARY);
         l7_detail = Some(d);
     }
 
@@ -330,7 +357,7 @@ pub fn convert(f: &flow::Flow) -> FlowDetail {
         l7,
         policies,
         is_reply: f.is_reply.unwrap_or(false),
-        dst_dns: f.destination_names.first().cloned().unwrap_or_default(),
+        dst_dns: destination.names.first().cloned().unwrap_or_default(),
         src_ip: ip.source.clone(),
         dst_ip: ip.destination.clone(),
         src_port,
@@ -625,5 +652,53 @@ mod tests {
         assert_eq!(e.drop_reason, "POLICY_DENIED");
         assert_eq!(e.l7, "HTTP GET /x 403");
         assert_eq!(e.tcp_flags, "");
+    }
+
+    #[test]
+    fn clips_long_text_from_flows() {
+        // Any client can make a URL this long; a DNS answer can be long too.
+        let http = flow::Flow {
+            l7: Some(flow::Layer7 {
+                record: Some(layer7::Record::Http(flow::Http {
+                    code: 200,
+                    method: "GET".into(),
+                    url: format!("/{}", "a".repeat(100_000)),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
+            destination_names: (0..100).map(|i| format!("name-{i}.example")).collect(),
+            ..Default::default()
+        };
+        let d = convert(&http);
+        assert!(d.event.l7.starts_with("HTTP GET /aaa") && d.event.l7.ends_with('…'));
+        assert!(d.event.l7.len() <= MAX_SUMMARY + '…'.len_utf8());
+        assert_eq!(d.l7.unwrap().http_url.len(), MAX_TEXT + '…'.len_utf8());
+        assert_eq!(d.destination.names.len(), MAX_ITEMS);
+        assert_eq!(d.event.dst_dns, "name-0.example");
+
+        let dns = flow::Flow {
+            l7: Some(flow::Layer7 {
+                record: Some(layer7::Record::Dns(flow::Dns {
+                    query: "big.example.".into(),
+                    ips: (0..1000).map(|i| format!("10.0.{}.{}", i / 256, i % 256)).collect(),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let d = convert(&dns);
+        assert!(d.event.l7.starts_with("DNS big.example → 10.0.0.0, 10.0.0.1, "));
+        assert!(d.event.l7.len() <= MAX_SUMMARY + '…'.len_utf8());
+        assert_eq!(d.l7.unwrap().dns_ips.len(), MAX_ITEMS);
+    }
+
+    #[test]
+    fn clip_cuts_between_characters() {
+        assert_eq!(clip("short", 10), "short");
+        assert_eq!(clip("abcdef", 3), "abc…");
+        // 'é' takes bytes 1 and 2: a cut after byte 2 would split it.
+        assert_eq!(clip("héllo", 2), "h…");
     }
 }

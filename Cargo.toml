@@ -12,8 +12,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [profile.release]
-lto = "thin"
+# Whole-program optimisation: a smaller binary (and image), for a longer build.
+lto = true
 codegen-units = 1
+# No symbol table, which is a fifth of the server's binary. Panics still say
+# where they happened (file and line).
+strip = true
 
 # Small WASM bundle for the frontend.
 [profile.release.package.frontend]
