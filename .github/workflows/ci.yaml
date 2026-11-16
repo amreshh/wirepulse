@@ -343,11 +343,12 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         env:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
-          # metadata-action reads the license from a LICENSE file, and there is none.
+          # metadata-action takes the license from GitHub's reading of the
+          # default branch, which a pull request's change doesn't reach: say it here.
           EXTRA: |
             org.opencontainers.image.title=wirepulse
             org.opencontainers.image.authors=amreshh (https://github.com/amreshh)
-            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.licenses=MIT
             org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}#readme
         with:
           images: ghcr.io/${{ github.repository }}
